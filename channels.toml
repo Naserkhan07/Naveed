@@ -3,12 +3,12 @@
 
 [youtube]
 # YouTube Studio -> Settings -> Channel -> Advanced settings
-channel_id = ""
+channel_id = "UCnKgkuthG1nbaytUi4J_3zg"
 
 [instagram]
 # Numeric Instagram Professional Account ID from the Meta Graph API
-user_id = ""
+user_id = "17841432791787477"
 
 [facebook]
 # Numeric Facebook Page ID connected to the Instagram professional account
-page_id = ""
+page_id = "1231108530089378"
