@@ -1,0 +1,307 @@
+# Shorts Autopilot — the whole automation lives on GitHub. Nothing runs locally.
+#
+#   quality gate → harvest new channel uploads → HotClip cloud clipping →
+#   publish exactly what each schedule owes → refresh the online dashboard.
+#
+# It wakes every 15 minutes (cron can be delayed — the credit-based scheduler
+# just publishes what is owed when a run happens, so nothing is ever lost) and
+# keeps itself alive forever: the SQLite queue, watch folder, exports, and the
+# HotClip toolchain persist between runs through GitHub caches, the dashboard
+# is republished to GitHub Pages after every run, and a tiny monthly keepalive
+# commit stops GitHub from disabling scheduled runs on idle repos.
+#
+# ONE-TIME SETUP (about 3 minutes, all in the GitHub web UI):
+#   1. Settings → Pages → Build and deployment → Source: "GitHub Actions".
+#      Your dashboard goes live at https://<your-user>.github.io/<this-repo>/
+#   2. Settings → Secrets and variables → Actions → add the secrets below.
+#   3. Actions tab → enable workflows if asked → "Run workflow" once manually.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   YOUTUBE_TOKEN_JSON       contents of your local youtube_token.json
+#   INSTAGRAM_USER_ID        numeric professional-account ID
+#   INSTAGRAM_ACCESS_TOKEN   long-lived Meta token (Facebook reuses it by default)
+#   FACEBOOK_PAGE_ID         numeric Page ID
+#   FACEBOOK_ACCESS_TOKEN    long-lived Page token (or leave unset to reuse the IG token)
+#   YTDLP_COOKIES_TXT        (optional) Netscape-format YouTube cookies — runners are
+#                            datacenter IPs, and YouTube may demand "not a bot" without them
+#
+# NOTE: the dashboard is a public page on a public repo. It never shows tokens
+# or secrets — only clip titles, schedule progress, and post links — but keep
+# that in mind before switching anything sensitive on.
+
+name: Autopilot
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 min; catch-up credits absorb any cron delay
+    - cron: "0 0 1 * *"    # monthly keepalive (see the keepalive job)
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: "Cycle stages to run this time"
+        type: choice
+        default: "download,channels,intake,publish"
+        options:
+          - "download,channels,intake,publish"
+          - "download,channels"
+          - "intake,publish"
+  push:
+    branches: [main]
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # ---- schedule + volume configuration (edit these like .env) ----
+  SCHEDULE_TIMEZONE: "Asia/Kolkata"
+  YOUTUBE_SCHEDULE_TIMES: "mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30"
+  YOUTUBE_UPLOADS_PER_SLOT: "2" # 3 slots × 2 = 6/day, the default API quota
+  INSTAGRAM_SCHEDULE_TIMES: "mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30"
+  INSTAGRAM_UPLOADS_PER_SLOT: "10"
+  FACEBOOK_SCHEDULE_TIMES: "mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00"
+  FACEBOOK_UPLOADS_PER_SLOT: "10"
+  # ---- behavior ----
+  RIGHTS_ACKNOWLEDGED: "true"
+  CHANNEL_SCAN_MAX_VIDEOS: "5"
+  CHANNEL_SCAN_INTERVAL_MINUTES: "60" # persisted in the DB, honoured across runs
+  FACEBOOK_LIMIT_COOLDOWN_HOURS: "24"
+  DELETE_UPLOADED_CLIPS: "true" # keeps the cached exports lean in the cloud
+  WORK_DIR: "work"
+  DATABASE_PATH: "work/jobs.db"
+  HOTCLIP_WATCH_DIR: "hotclip-watch"
+  HOTCLIP_EXPORT_DIR: "hotclip-exports"
+  # In the cloud there is no localhost: the dashboard is exported to GitHub
+  # Pages instead (same page, same data). Heartbeats still mark it RUNNING.
+  STATUS_PANEL_ENABLED: "false"
+  STATUS_STALE_AFTER_SECONDS: "2700" # 45 min covers the 15-min cron + delays
+  # Experimental: clip in GitHub via HotClip's headless CLI (AGPL source cloned
+  # at runtime, never vendored here). A clipping failure never blocks publishing.
+  HOTCLIP_CLOUD: "true"
+  HOTCLIP_REPO: "https://github.com/xixihhhh/hotclip"
+  RUN_STAGES: ${{ inputs.stages || 'download,channels,intake,publish' }}
+
+jobs:
+  tests:
+    name: Quality gate
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -U pip && pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest -q
+
+  autopilot:
+    name: Harvest → clip → publish → refresh dashboard
+    if: >-
+      github.event_name != 'pull_request' &&
+      !(github.event_name == 'schedule' && github.event.schedule == '0 0 1 * *')
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the bot
+        run: |
+          python -m pip install -U pip
+          pip install -e .
+
+      - name: Restore autopilot state (queue DB, watch folder, exports)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            work/
+            hotclip-watch/
+            hotclip-exports/
+          key: autopilot-state-${{ github.run_id }}
+          restore-keys: autopilot-state-
+
+      - name: Restore HotClip toolchain cache
+        id: hotclip-cache
+        if: env.HOTCLIP_CLOUD == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            hotclip-app/
+            ~/.cache/
+          key: hotclip-toolchain-v2
+          restore-keys: hotclip-toolchain-
+
+      - name: Write secrets and pick enabled platforms
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+          FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+          YTDLP_COOKIES_TXT: ${{ secrets.YTDLP_COOKIES_TXT }}
+        run: |
+          set -e
+          mkdir -p work
+          {
+            if [ -n "$YOUTUBE_TOKEN_JSON" ]; then
+              printf '%s' "$YOUTUBE_TOKEN_JSON" > work/youtube-token.json
+              echo "YOUTUBE_TOKEN_FILE=work/youtube-token.json"
+              echo "UPLOAD_YOUTUBE=true"
+            else
+              echo "UPLOAD_YOUTUBE=false"
+              echo "::warning::YOUTUBE_TOKEN_JSON secret missing; YouTube publishing disabled."
+            fi
+            if [ -n "$YTDLP_COOKIES_TXT" ]; then
+              printf '%s' "$YTDLP_COOKIES_TXT" > work/ytdlp-cookies.txt
+              echo "YTDLP_COOKIE_FILE=work/ytdlp-cookies.txt"
+            fi
+            if [ -n "$INSTAGRAM_USER_ID" ] && [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; then
+              echo "INSTAGRAM_USER_ID=$INSTAGRAM_USER_ID"
+              echo "UPLOAD_INSTAGRAM=true"
+            else
+              echo "UPLOAD_INSTAGRAM=false"
+              echo "::warning::Instagram secrets missing; Instagram publishing disabled."
+            fi
+            if [ -n "$FACEBOOK_PAGE_ID" ] && { [ -n "$FACEBOOK_ACCESS_TOKEN" ] || [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; }; then
+              echo "FACEBOOK_PAGE_ID=$FACEBOOK_PAGE_ID"
+              echo "UPLOAD_FACEBOOK=true"
+            else
+              echo "UPLOAD_FACEBOOK=false"
+              echo "::warning::Facebook secrets missing; Facebook publishing disabled."
+            fi
+          } >> "$GITHUB_ENV"
+
+      - name: Split requested stages
+        run: |
+          S=",${RUN_STAGES},"
+          HARVEST=""; PUBLISH=""
+          case "$S" in *,download,*) HARVEST="download";; esac
+          case "$S" in *,channels,*) HARVEST="${HARVEST:+$HARVEST,}channels";; esac
+          case "$S" in *,intake,*) PUBLISH="intake";; esac
+          case "$S" in *,publish,*) PUBLISH="${PUBLISH:+$PUBLISH,}publish";; esac
+          {
+            echo "HARVEST_STAGES=$HARVEST"
+            echo "PUBLISH_STAGES=$PUBLISH"
+            if [ -n "$HARVEST$PUBLISH" ]; then echo "CLIPPING_NEEDED=true"; else echo "CLIPPING_NEEDED=false"; fi
+          } >> "$GITHUB_ENV"
+          echo "harvest stages: ${HARVEST:-none} | publish stages: ${PUBLISH:-none}"
+
+      - name: Download new channel uploads into the watch folder
+        if: env.HARVEST_STAGES != '' && github.event_name != 'push'
+        continue-on-error: true # datacenter IPs can be throttled; the backlog stays queued
+        run: python main.py --once --stages "$HARVEST_STAGES"
+
+      - name: Install Node.js and pnpm (cloud clipping)
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch and install HotClip (AGPL, used as an external tool)
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        continue-on-error: true
+        run: |
+          corepack enable
+          if [ ! -d hotclip-app ]; then
+            git clone --depth 1 "$HOTCLIP_REPO" hotclip-app
+          fi
+          cd hotclip-app
+          pnpm install
+
+      - name: Clip every pending source with HotClip
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        continue-on-error: true # a clipping failure must never block publishing the backlog
+        working-directory: hotclip-app
+        run: |
+          shopt -s nullglob
+          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv; do
+            [ -e "$src" ] || continue
+            [ -e "$src.clipped" ] && continue
+            echo "=== HotClip clipping: $src ==="
+            if pnpm cli clip "$src" --out "../hotclip-exports" --json; then
+              touch "$src.clipped"
+            else
+              echo "::warning::HotClip failed on $src; it will be retried next run."
+            fi
+          done
+
+      - name: Queue finished clips and publish what is due
+        if: env.PUBLISH_STAGES != ''
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+        run: python main.py --once --stages "$PUBLISH_STAGES"
+
+      - name: Save autopilot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            work/
+            hotclip-watch/
+            hotclip-exports/
+          key: autopilot-state-${{ github.run_id }}
+
+      - name: Save HotClip toolchain cache (first run only)
+        if: always() && env.HOTCLIP_CLOUD == 'true' && steps.hotclip-cache.outputs.cache-hit != 'true'
+        continue-on-error: true # re-saving an existing key warns; harmless
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            hotclip-app/
+            ~/.cache/
+          key: hotclip-toolchain-v2
+
+      - name: Export the online status dashboard
+        if: always()
+        run: python -m shorts_bot.pages_export --out site
+
+      - name: Upload dashboard artifact
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      - name: Deploy dashboard to GitHub Pages
+        if: always()
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  keepalive:
+    name: Keep scheduled automation alive (monthly)
+    if: github.event_name == 'schedule' && github.event.schedule == '0 0 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push an empty keepalive commit
+        # GitHub disables scheduled workflows after ~60 days without commits;
+        # one tiny monthly commit on a dedicated branch resets that clock.
+        run: |
+          set -e
+          git config user.name "autopilot-keepalive[bot]"
+          git config user.email "autopilot-keepalive[bot]@users.noreply.github.com"
+          if git fetch origin autopilot-keepalive; then
+            git checkout -B autopilot-keepalive origin/autopilot-keepalive
+          else
+            git checkout -b autopilot-keepalive
+          fi
+          git commit --allow-empty -m "chore: keep scheduled automation alive ($(date -u +%Y-%m))"
+          git push -q origin autopilot-keepalive
