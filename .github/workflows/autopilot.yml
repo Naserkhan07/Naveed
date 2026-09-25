@@ -1,11 +1,11 @@
 # Shorts Autopilot — the whole automation lives on GitHub. Nothing runs locally.
 #
-#   quality gate → harvest new channel uploads → HotClip cloud clipping →
-#   publish exactly what each schedule owes → refresh the online dashboard.
+#   quality gate → publish prepared clips whose platform schedules are due →
+#   harvest recent unseen channel uploads → HotClip cloud clipping → queue clips
+#   for the next slot → refresh the online dashboard.
 #
 # It wakes every 15 minutes (cron can be delayed — the credit-based scheduler
-# just publishes what is owed when a run happens, so nothing is ever lost) and
-# keeps itself alive forever: the SQLite queue, watch folder, exports, and the
+# just publishes what is owed when a run happens, so nothing is ever lost) and the
 # HotClip toolchain persist between runs through GitHub caches, the dashboard
 # is republished to GitHub Pages after every run, and a tiny monthly keepalive
 # commit stops GitHub from disabling scheduled runs on idle repos.
