@@ -12,10 +12,9 @@ information.txt
 *.db
 *.db-shm
 *.db-wal
-# ...except the committed bot-state used by the GitHub Actions deployment
-!bot-state/jobs.db
 work/
-bot-work/
+hotclip-watch/
+hotclip-exports/
 credentials/
 client_secret*.json
 youtube_token.json

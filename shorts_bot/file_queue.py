@@ -2,26 +2,38 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
+import re
 import sys
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .channels import ChannelVideo, discover_new_videos
+from .channels import discover_new_videos
 from .config import Settings
 from .db import JobRepository
-from .downloader import is_youtube_url
+from .downloader import VideoDownloader, is_youtube_url
 from .errors import ConfigurationError, WorkflowError
-from .models import ChannelPlatform, Job, SourceVideo
-from .pipeline import WorkflowPipeline, WorkflowServices
-from .publisher import publish_platform_due, run_due_publishes
+from .hotclip import scan_export_dir
+from .models import ChannelPlatform
+from .publisher import Publisher
+
+logger = logging.getLogger(__name__)
 
 _PLATFORMS = {
     "youtube": ChannelPlatform.YOUTUBE,
     "instagram": ChannelPlatform.INSTAGRAM,
     "facebook": ChannelPlatform.FACEBOOK,
 }
+
+_SAFE_NAME = re.compile(r"[^\w.-]+")
+
+
+def _safe_stem(value: str, fallback: str = "video") -> str:
+    cleaned = _SAFE_NAME.sub("-", value).strip("-._")
+    return cleaned[:60] or fallback
 
 
 class LinkFileQueue:
@@ -46,8 +58,8 @@ class LinkFileQueue:
                 )
         return urls
 
-    def acknowledge_download(self, url: str, job: Job, source: SourceVideo) -> None:
-        """Remove the first exact URL line and record it; leave comments and new URLs intact."""
+    def acknowledge_download(self, url: str, label: str) -> None:
+        """Remove the first exact URL line and record it; leave comments intact."""
         original_lines = self.links_file.read_text(encoding="utf-8").splitlines(keepends=True)
         output_lines: list[str] = []
         removed = False
@@ -69,160 +81,126 @@ class LinkFileQueue:
             temporary.unlink(missing_ok=True)
 
         timestamp = datetime.now(UTC).isoformat(timespec="seconds")
-        safe_title = " ".join(source.title.split()).replace("\t", " ")
         with self.downloaded_log.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"{timestamp}\t{job.id}\t{url}\t{safe_title}\n")
+            log_file.write(f"{timestamp}\t{url}\t{label}\n")
+
+
+class HotClipCoordinator:
+    """Feeds downloaded sources to HotClip and harvests its finished clips."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        repository: JobRepository,
+        downloader: VideoDownloader,
+    ) -> None:
+        self.settings = settings
+        self.repository = repository
+        self.downloader = downloader
+
+    async def deliver_source(self, url: str, source_label: str = "") -> Path | None:
+        """Download one video straight into HotClip's watch folder."""
+        staging = self.settings.work_dir / "incoming"
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            source = await self.downloader.download(url, staging)
+        except WorkflowError as exc:
+            print(f"Download failed for {url}: {exc}", file=sys.stderr, flush=True)
+            return None
+        label = source_label or source.title
+        suffix = source.path.suffix or ".mp4"
+        destination = self.settings.hotclip_watch_dir / (
+            f"{_safe_stem(label)}__{_safe_stem(source.video_id, 'id')}{suffix}"
+        )
+        if destination.exists():
+            print(f"HotClip watch folder already has {destination.name}; skipping.", flush=True)
+            source.path.unlink(missing_ok=True)
+            return None
+        self.settings.hotclip_watch_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(source.path, destination)
+        except OSError:
+            import shutil
+
+            shutil.move(str(source.path), destination)
+        print(f"[{label}] handed to HotClip: {destination}", flush=True)
+        with suppress(OSError):
+            source.path.parent.rmdir()
+        return destination
+
+    async def intake_exports(self) -> int:
+        """Queue newly finished HotClip exports for publishing."""
+        clips = await asyncio.to_thread(
+            scan_export_dir,
+            self.settings.hotclip_export_dir,
+            None,
+            self.settings.hotclip_min_clip_age_seconds,
+        )
+        added = 0
+        for clip in clips:
+            if self.repository.publication_exists(clip.mp4_path):
+                continue
+            title = clip.title or clip.mp4_path.stem
+            description = clip.description or title
+            caption = clip.instagram_caption or title
+            self.repository.add_publication(
+                clip.mp4_path,
+                title=title[:450],
+                description=description[: self.settings.youtube_description_target_chars],
+                instagram_caption=caption[: self.settings.instagram_caption_target_chars],
+                cover_path=clip.cover_path,
+                source_label=clip.source_label,
+            )
+            added += 1
+            print(f"[intake] queued new clip for publishing: {title}", flush=True)
+        return added
 
 
 async def run_file_queue(
     settings: Settings,
     watch: bool = True,
-    resume_job_id: str | None = None,
-    expand_job_id: str | None = None,
-    rebuild_job_id: str | None = None,
     scan_only: bool = False,
 ) -> int:
-    settings.validate_file_queue()
+    settings.validate_queue()
     settings.prepare_directories()
+    for warning in settings.quota_warnings():
+        print(f"Quota warning: {warning}", file=sys.stderr, flush=True)
+
     repository = JobRepository(settings.database_path)
-    repository.fail_interrupted()
-    services = WorkflowServices.from_settings(settings)
-    services.media.check_tools()
+    downloader = VideoDownloader(
+        cookies_from_browser=settings.ytdlp_cookies_from_browser,
+        browser_profile=settings.ytdlp_browser_profile,
+        cookie_file=settings.ytdlp_cookie_file,
+    )
+    coordinator = HotClipCoordinator(settings, repository, downloader)
+    publisher = Publisher(settings, repository)
     link_queue = LinkFileQueue(settings.links_file, settings.downloaded_links_log)
 
-    async def report(job: Job, message: str) -> None:
-        print(f"[{job.id}] {job.status.value}: {message}", flush=True)
-
-    async def downloaded(job: Job, source: SourceVideo) -> None:
-        # Channel-discovered URLs are not in links.txt; only file entries are acked.
-        if job.source_url in link_queue.pending_urls():
-            link_queue.acknowledge_download(job.source_url, job, source)
-            print(f"[{job.id}] removed downloaded URL from {settings.links_file}", flush=True)
-
-    pipeline = WorkflowPipeline(
-        settings,
-        repository,
-        services,
-        on_status=report,
-        on_downloaded=downloaded,
-    )
-
-    async def run_preflight() -> bool:
-        try:
-            report_lines = await services.preflight()
-        except WorkflowError as exc:
-            print(f"Credential check failed: {exc}", file=sys.stderr, flush=True)
-            return False
-        print("Credential report: " + " | ".join(report_lines), flush=True)
-        return True
-
-    workflow_ready = await run_preflight()
-    selected_job_id = rebuild_job_id or expand_job_id or resume_job_id
-    if selected_job_id:
-        if not workflow_ready:
-            return 1
-        job = repository.get(selected_job_id)
-        if not job:
-            print(
-                f"Job {selected_job_id} was not found in {settings.database_path}.", file=sys.stderr
-            )
-            return 1
-        if rebuild_job_id:
-            previous_clips = repository.reset_clip_media(job.id)
-            if not previous_clips:
-                print(
-                    f"Job {job.id} has no multi-clip batch to rebuild; use --expand first.",
-                    file=sys.stderr,
-                )
-                return 1
-            for clip in previous_clips:
-                for path_value in (clip.output_path, clip.thumbnail_path):
-                    if path_value:
-                        Path(path_value).unlink(missing_ok=True)
-            job_dir = settings.work_dir / "jobs" / job.id
-            for pattern in ("short-*.mp4", "thumbnail-*.jpg"):
-                for stale_file in job_dir.glob(pattern):
-                    stale_file.unlink(missing_ok=True)
-            action = "regenerating metadata, rebuilding, and re-uploading every clip"
-        elif expand_job_id:
-            action = "expanding into multiple clips"
-        else:
-            action = "resuming"
-        print(f"[{job.id}] reusing its existing downloaded source and {action}", flush=True)
-        result = await pipeline.process(
-            job.id,
-            reuse_downloaded=True,
-            expand_existing=bool(expand_job_id),
-        )
-        return 1 if result.error else 0
-
-    failed_urls_this_session: set[str] = set()
     if watch:
         print(
-            f"Local watcher started. Add YouTube URLs to {settings.links_file}. "
-            "Press Ctrl+C to stop.",
+            "Watcher started. Feed sources through links.txt and channels.txt; "
+            "HotClip makes the clips; the scheduler publishes them. Ctrl+C to stop.",
             flush=True,
         )
 
-    async def retry_pending_jobs() -> None:
-        counts = repository.pending_upload_counts()
-        print(
-            "Pending upload report: "
-            + " | ".join(f"{platform}: {count}" for platform, count in counts.items()),
-            flush=True,
-        )
-        youtube_ready = bool(
-            settings.upload_youtube and services.platform_unavailable("YouTube") is None
-        )
-        instagram_ready = bool(
-            settings.upload_instagram and services.platform_unavailable("Instagram") is None
-        )
-        facebook_ready = bool(
-            settings.upload_facebook and services.platform_unavailable("Facebook") is None
-        )
-        pending_jobs = repository.list_pending_upload_jobs(
-            youtube=youtube_ready,
-            instagram=instagram_ready,
-            facebook=facebook_ready,
-            limit=settings.pending_retry_jobs_per_cycle,
-        )
-        for pending_job in pending_jobs:
-            print(
-                f"[{pending_job.id}] automatically retrying pending platform uploads",
-                flush=True,
-            )
-            await pipeline.process(pending_job.id, reuse_downloaded=True)
-
-    next_credential_check = time.monotonic() + settings.credential_check_minutes * 60
-    next_pending_retry = time.monotonic()
+    failures: set[str] = set()
     next_channel_scan = time.monotonic()
 
-    async def process_source_url(
-        url: str,
-        channel_video: ChannelVideo | None = None,
-    ) -> bool:
-        job = repository.create(chat_id=0, user_id=0, source_url=url)
-        if channel_video is not None:
-            repository.mark_channel_video_queued(
-                channel_video.channel_key,
-                channel_video.video_id,
-                channel_video.url,
-                channel_video.title,
-                job.id,
-            )
-        result = await pipeline.process(job.id)
-        if result.error:
-            failed_urls_this_session.add(url)
-            if watch:
-                print(
-                    f"[{job.id}] URL will not retry again in this session. "
-                    "It remains queued and will retry after the next credential cycle.",
-                    flush=True,
-                )
-            return False
-        return True
+    async def process_links() -> bool:
+        processed = False
+        for url in link_queue.pending_urls():
+            if url in failures:
+                continue
+            processed = True
+            destination = await coordinator.deliver_source(url)
+            if destination is None:
+                failures.add(url)
+                print(f"[links] {url} failed; it stays in links.txt for a retry.", flush=True)
+                continue
+            link_queue.acknowledge_download(url, destination.name)
+        return processed
 
-    async def scan_channels_once() -> bool:
+    async def process_channels() -> bool:
         if not settings.channels_file.exists():
             return False
         new_videos, errors = await asyncio.to_thread(
@@ -235,112 +213,71 @@ async def run_file_queue(
             print(message, file=sys.stderr, flush=True)
         processed = False
         for video in new_videos:
-            if video.url in failed_urls_this_session:
+            if video.url in failures:
                 continue
             processed = True
             print(
                 f"[channel] new upload from {video.channel_key}: {video.title} ({video.url})",
                 flush=True,
             )
-            if not await process_source_url(video.url, channel_video=video):
-                return processed
+            destination = await coordinator.deliver_source(video.url, video.title)
+            if destination is None:
+                failures.add(video.url)
+                continue
+            repository.mark_channel_video_queued(
+                video.channel_key,
+                video.video_id,
+                video.url,
+                video.title,
+            )
         return processed
 
-    async def publish_scheduled_uploads() -> None:
-        if not settings.scheduled_platforms:
-            return
-        published = await run_due_publishes(
-            settings,
-            repository,
-            services,
-            on_status=lambda message: print(f"[scheduler] {message}", flush=True),
-        )
-        for clip in published:
+    async def intake_and_publish() -> None:
+        added = await coordinator.intake_exports()
+        counts = repository.pending_publication_counts()
+        total = sum(counts.values())
+        if added or total:
             print(
-                f"[scheduler] published clip {clip.clip_index} of job {clip.job_id}",
+                f"[queue] {added} new clip(s) grabbed from HotClip exports; "
+                + " | ".join(f"{name}: {count}" for name, count in counts.items()),
                 flush=True,
             )
+        await publisher.publish_all_due(
+            report=lambda message: print(f"[scheduler] {message}", flush=True)
+        )
 
     if scan_only:
-        await scan_channels_once()
-        await publish_scheduled_uploads()
-        return 1 if failed_urls_this_session else 0
+        await process_channels()
+        return 1 if failures else 0
 
     while True:
-        if not workflow_ready or time.monotonic() >= next_credential_check:
-            try:
-                refreshed = Settings.from_env(override=True)
-                refreshed.validate_file_queue()
-                refreshed.prepare_directories()
-                refreshed_services = WorkflowServices.from_settings(refreshed)
-                refreshed_services.media.check_tools()
-                refreshed_report = await refreshed_services.preflight()
-                settings = refreshed
-                services = refreshed_services
-                link_queue = LinkFileQueue(settings.links_file, settings.downloaded_links_log)
-                pipeline = WorkflowPipeline(
-                    settings,
-                    repository,
-                    services,
-                    on_status=report,
-                    on_downloaded=downloaded,
+        try:
+            await process_links()
+            if time.monotonic() >= next_channel_scan:
+                await process_channels()
+                next_channel_scan = (
+                    time.monotonic() + settings.channel_scan_interval_minutes * 60
                 )
-                workflow_ready = True
-                failed_urls_this_session.clear()
-                print("Credential report: " + " | ".join(refreshed_report), flush=True)
-                next_credential_check = time.monotonic() + settings.credential_check_minutes * 60
-                next_pending_retry = min(next_pending_retry, time.monotonic())
-            except (ConfigurationError, WorkflowError) as exc:
-                workflow_ready = False
-                print(
-                    f"Credential refresh failed; retrying automatically: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                next_credential_check = time.monotonic() + 300
-
-        if not workflow_ready:
+            await intake_and_publish()
+        except ConfigurationError as exc:
+            print(f"Configuration problem: {exc}", file=sys.stderr, flush=True)
             if not watch:
                 return 1
-            await asyncio.sleep(min(settings.links_poll_seconds, 30))
-            continue
-
-        urls = link_queue.pending_urls()
-        processed_new_url = False
-        for url in urls:
-            if url in failed_urls_this_session:
-                continue
-            processed_new_url = True
-            await process_source_url(url)
-
-        if time.monotonic() >= next_channel_scan:
-            if await scan_channels_once():
-                processed_new_url = True
-            next_channel_scan = time.monotonic() + settings.channel_scan_interval_minutes * 60
-
-        if not processed_new_url and time.monotonic() >= next_pending_retry:
-            await retry_pending_jobs()
-            next_pending_retry = time.monotonic() + settings.credential_check_minutes * 60
-
-        await publish_scheduled_uploads()
 
         if not watch:
-            return 1 if failed_urls_this_session else 0
+            return 1 if failures else 0
         await asyncio.sleep(settings.links_poll_seconds)
 
 
 async def run_scheduled_publish(settings: Settings, platform: ChannelPlatform) -> int:
-    """One-shot scheduled publisher used by the per-platform cron jobs."""
-    settings.validate_file_queue()
+    """One-shot scheduled publisher for per-platform cron jobs."""
+    settings.validate_queue()
     settings.prepare_directories()
     repository = JobRepository(settings.database_path)
-    services = WorkflowServices.from_settings(settings)
-    await publish_platform_due(
-        settings,
-        repository,
-        services,
+    publisher = Publisher(settings, repository)
+    await publisher.publish_due(
         platform,
-        on_status=lambda message: print(f"[scheduler] {message}", flush=True),
+        report=lambda message: print(f"[scheduler] {message}", flush=True),
     )
     return 0
 
@@ -348,30 +285,15 @@ async def run_scheduled_publish(settings: Settings, platform: ChannelPlatform) -
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Watch links.txt and publish multiple AI-selected YouTube Shorts and/or "
-            "Instagram Reels from each downloaded video."
+            "Hand new YouTube videos to HotClip (clipping/captions), harvest the "
+            "finished clips, and publish them on each platform's schedule."
         )
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--once",
         action="store_true",
-        help="Process the current file once and exit instead of watching it",
-    )
-    mode.add_argument(
-        "--resume",
-        metavar="JOB_ID",
-        help="Reuse a previously downloaded source and retry unfinished stages",
-    )
-    mode.add_argument(
-        "--expand",
-        metavar="JOB_ID",
-        help="Turn a legacy single-clip job into a new multi-clip batch",
-    )
-    mode.add_argument(
-        "--rebuild",
-        metavar="JOB_ID",
-        help="Re-render and re-upload every clip using current quality settings",
+        help="Run one full cycle (links, channels, intake, due uploads) and exit",
     )
     mode.add_argument(
         "--publish",
@@ -379,13 +301,13 @@ def main() -> None:
         choices=sorted(_PLATFORMS),
         help=(
             "Publish due scheduled uploads for one platform (youtube, instagram, "
-            "facebook) and exit. Used by the per-platform schedulers."
+            "facebook) and exit. Used by per-platform schedulers."
         ),
     )
     mode.add_argument(
         "--scan-channels",
         action="store_true",
-        help="Only scan channels.txt for new uploads, process them, then exit",
+        help="Only scan channels.txt for new uploads and hand them to HotClip, then exit",
     )
     args = parser.parse_args()
     try:
@@ -398,21 +320,14 @@ def main() -> None:
             exit_code = asyncio.run(
                 run_file_queue(
                     settings,
-                    watch=not args.once
-                    and not args.resume
-                    and not args.expand
-                    and not args.rebuild
-                    and not args.scan_channels,
-                    resume_job_id=args.resume,
-                    expand_job_id=args.expand,
-                    rebuild_job_id=args.rebuild,
+                    watch=not args.once and not args.scan_channels,
                     scan_only=args.scan_channels,
                 )
             )
     except ConfigurationError as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:
-        print("\nLocal watcher stopped.")
+        print("\nWatcher stopped.")
         exit_code = 0
     raise SystemExit(exit_code)
 

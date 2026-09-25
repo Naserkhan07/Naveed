@@ -1,118 +1,85 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from shorts_bot.config import ConfigurationError, Settings
 from shorts_bot.models import ChannelPlatform
 from shorts_bot.scheduler import (
     PlatformSchedule,
+    ScheduleParseError,
     due_credits,
     now_in,
-    parse_schedule_times,
+    parse_schedule_spec,
     platform_schedules,
     schedule_timezone,
 )
 
 
-def test_parse_schedule_times_sorts_and_dedupes() -> None:
-    times = parse_schedule_times("18:00, 09:30,18:00")
-    assert [t.strftime("%H:%M") for t in times] == ["09:30", "18:00"]
+def test_parse_daily_times() -> None:
+    per_day = parse_schedule_spec("18:00, 09:30")
+    for day in range(7):
+        assert [t.strftime("%H:%M") for t in per_day[day]] == ["09:30", "18:00"]
 
 
-def test_parse_schedule_times_empty() -> None:
-    assert parse_schedule_times("") == []
+def test_parse_empty_spec() -> None:
+    assert parse_schedule_spec("") == {day: [] for day in range(7)}
 
 
-def test_slots_until_counts_passed_slots() -> None:
-    schedule = PlatformSchedule(ChannelPlatform.YOUTUBE, parse_schedule_times("09:00,13:00,18:00"))
-    assert schedule.slots_until(parse_schedule_times("12:59")[0]) == 1
-    assert schedule.slots_until(parse_schedule_times("13:00")[0]) == 2
-    assert schedule.slots_until(parse_schedule_times("23:59")[0]) == 3
+def test_parse_per_weekday_spec() -> None:
+    per_day = parse_schedule_spec("mon=07:30,20:30;fri=07:30,21:30;sun=08:30")
+    assert [t.strftime("%H:%M") for t in per_day[0]] == ["07:30", "20:30"]
+    assert [t.strftime("%H:%M") for t in per_day[4]] == ["07:30", "21:30"]
+    assert [t.strftime("%H:%M") for t in per_day[6]] == ["08:30"]
+    assert per_day[1] == []  # Tuesday has no slots
 
 
-def test_due_credits_subtracts_uploads_done() -> None:
-    schedule = PlatformSchedule(ChannelPlatform.INSTAGRAM, parse_schedule_times("00:00,12:00"))
-    local_now = datetime(2026, 9, 25, 18, 0, tzinfo=ZoneInfo("UTC"))
-    assert due_credits(schedule, 0, local_now) == 2
-    assert due_credits(schedule, 1, local_now) == 1
-    assert due_credits(schedule, 5, local_now) == 0
+def test_parse_rejects_mixing_forms() -> None:
+    with pytest.raises(ScheduleParseError):
+        parse_schedule_spec("08:00;fri=10:00")
 
 
-def test_platform_schedules_only_configured() -> None:
-    schedules = platform_schedules("09:00", "", "20:00")
+def test_parse_rejects_bad_time() -> None:
+    with pytest.raises(ScheduleParseError):
+        parse_schedule_spec("25:00")
+    with pytest.raises(ScheduleParseError):
+        parse_schedule_spec("funday=08:00")
+
+
+def test_uploads_owed_multiplies_slots() -> None:
+    per_day = parse_schedule_spec("07:30,13:00,20:30")
+    schedule = PlatformSchedule(ChannelPlatform.YOUTUBE, per_day, uploads_per_slot=7)
+    noon = datetime(2026, 9, 22, 12, 0, tzinfo=ZoneInfo("UTC"))  # a Tuesday
+    assert schedule.uploads_owed_until(1, noon.time()) == 7
+    night = datetime(2026, 9, 22, 22, 0, tzinfo=ZoneInfo("UTC"))
+    assert schedule.uploads_owed_until(1, night.time()) == 21
+
+
+def test_due_credits_subtracts_todays_uploads() -> None:
+    per_day = parse_schedule_spec("tue=08:00,19:30")
+    schedule = PlatformSchedule(ChannelPlatform.INSTAGRAM, per_day, uploads_per_slot=10)
+    evening = datetime(2026, 9, 22, 21, 0, tzinfo=ZoneInfo("UTC"))
+    assert due_credits(schedule, 0, evening) == 20
+    assert due_credits(schedule, 15, evening) == 5
+    assert due_credits(schedule, 25, evening) == 0
+    monday = datetime(2026, 9, 21, 21, 0, tzinfo=ZoneInfo("UTC"))
+    assert due_credits(schedule, 0, monday) == 0  # no Monday slots
+
+
+def test_platform_schedules_from_specs() -> None:
+    schedules = platform_schedules(
+        ("mon=08:00", 7),
+        ("", 1),
+        ("sun=10:00,19:00", 10),
+    )
     assert set(schedules) == {ChannelPlatform.YOUTUBE, ChannelPlatform.FACEBOOK}
+    assert schedules[ChannelPlatform.YOUTUBE].uploads_per_slot == 7
 
 
 def test_schedule_timezone_named() -> None:
     assert schedule_timezone("Asia/Kolkata").key == "Asia/Kolkata"
 
 
-def test_now_in_returns_aware_datetime() -> None:
+def test_now_in_is_aware() -> None:
     assert now_in(ZoneInfo("UTC")).tzinfo is not None
-
-
-def _base_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    for name in (
-        "YOUTUBE_SCHEDULE_TIMES",
-        "INSTAGRAM_SCHEDULE_TIMES",
-        "FACEBOOK_SCHEDULE_TIMES",
-        "SCHEDULE_TIMEZONE",
-        "SUBTITLES_ENABLED",
-        "SUBTITLES_WORDS_PER_SCREEN",
-        "CHANNELS_FILE",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("GROQ_API_KEY", "key")
-    monkeypatch.setenv("RIGHTS_ACKNOWLEDGED", "true")
-    monkeypatch.setenv("WORK_DIR", str(tmp_path / "work"))
-    monkeypatch.setenv("CHANNEL_CONFIG_FILE", str(tmp_path / "missing.toml"))
-
-
-def test_config_accepts_valid_schedule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _base_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("YOUTUBE_SCHEDULE_TIMES", "09:30,18:00")
-    monkeypatch.setenv("SCHEDULE_TIMEZONE", "Asia/Kolkata")
-    settings = Settings.from_env(env_file=None)
-    assert settings.youtube_schedule_times == "09:30,18:00"
-    assert settings.youtube_upload_immediate is False
-    assert settings.instagram_upload_immediate is True
-
-
-def test_config_rejects_bad_schedule_format(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _base_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("YOUTUBE_SCHEDULE_TIMES", "9:30am")
-    with pytest.raises(ConfigurationError, match="YOUTUBE_SCHEDULE_TIMES"):
-        Settings.from_env(env_file=None)
-
-
-def test_config_rejects_bad_timezone(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _base_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("SCHEDULE_TIMEZONE", "Not/AZone")
-    with pytest.raises(ConfigurationError, match="SCHEDULE_TIMEZONE"):
-        Settings.from_env(env_file=None)
-
-
-def test_config_scheduled_platforms(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _base_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("UPLOAD_YOUTUBE", "true")
-    monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC123")
-    monkeypatch.setenv("YOUTUBE_SCHEDULE_TIMES", "10:00")
-    monkeypatch.setenv("FACEBOOK_PAGE_ID", "123")
-    monkeypatch.setenv("FACEBOOK_ACCESS_TOKEN", "token")
-    settings = Settings.from_env(env_file=None)
-    assert settings.scheduled_platforms == ("YouTube",)
-
-
-def test_config_subtitle_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _base_env(monkeypatch, tmp_path)
-    settings = Settings.from_env(env_file=None)
-    assert settings.subtitles_enabled is True
-    assert settings.subtitles_words_per_screen == 4
-    assert settings.subtitles_font_name == "Anton"
-    assert settings.channel_scan_max_videos == 5

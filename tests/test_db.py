@@ -1,120 +1,90 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from shorts_bot.db import JobRepository
-from shorts_bot.models import JobStatus, ShortPlan
+from shorts_bot.models import ChannelPlatform
 
 
-def test_job_lifecycle(tmp_path: Path) -> None:
-    repository = JobRepository(tmp_path / "jobs.db")
-    job = repository.create(101, 202, "https://youtu.be/example")
+def _repo(tmp_path: Path) -> JobRepository:
+    return JobRepository(tmp_path / "work" / "jobs.db")
 
-    assert job.status == JobStatus.QUEUED
-    assert job.archive_path is None
-    assert repository.list_recent(202) == [job]
 
-    updated = repository.update(
-        job.id,
-        status=JobStatus.RENDERING,
-        progress_message="Rendering",
-        short_title="A title",
+def test_channel_video_memory(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    unseen = repo.filter_unseen_channel_videos("@one/videos", ["a", "b", "c"])
+    assert unseen == {"a", "b", "c"}
+    repo.mark_channel_video_queued("@one/videos", "b", "https://youtu.be/b", "Title B")
+    assert repo.filter_unseen_channel_videos("@one/videos", ["a", "b", "c"]) == {"a", "c"}
+    # Other channels are independent.
+    assert "b" in repo.filter_unseen_channel_videos("@two/videos", ["b"])
+
+
+def test_publication_lifecycle(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    clip_path = tmp_path / "exports" / "clip-01.mp4"
+    clip_path.parent.mkdir(parents=True)
+    clip_path.write_bytes(b"clip")
+
+    assert not repo.publication_exists(clip_path)
+    publication = repo.add_publication(
+        clip_path,
+        title="Great clip",
+        description="Long body",
+        instagram_caption="Caption",
+        source_label="Source video",
     )
-    assert updated.status == JobStatus.RENDERING
-    assert updated.short_title == "A title"
+    assert repo.publication_exists(clip_path)
+    assert publication.title == "Great clip"
+    assert publication.youtube_video_id is None
 
-    assert repository.fail_interrupted() == 1
-    failed = repository.get(job.id)
-    assert failed is not None
-    assert failed.status == JobStatus.FAILED
-    assert failed.error
+    # FIFO: this one is the oldest pending for every platform.
+    pending = repo.next_pending_publication(ChannelPlatform.YOUTUBE)
+    assert pending is not None and pending.id == publication.id
 
+    later = repo.add_publication(tmp_path / "exports" / "clip-02.mp4", title="Second")
+    assert repo.next_pending_publication(ChannelPlatform.YOUTUBE).id == publication.id  # type: ignore[union-attr]
 
-def test_saves_and_updates_multiple_clips(tmp_path: Path) -> None:
-    repository = JobRepository(tmp_path / "jobs.db")
-    job = repository.create(0, 0, "https://youtu.be/example")
-    plans = [
-        ShortPlan(0, 25, "First", "Description 1", "Caption 1"),
-        ShortPlan(40, 25, "Second", "Description 2", "Caption 2"),
-    ]
-
-    clips = repository.save_plans(job.id, plans)
-    updated = repository.update_clip(
-        job.id,
-        1,
-        output_path="short-001.mp4",
-        thumbnail_path="thumbnail-001.jpg",
-        youtube_video_id="youtube-1",
+    updated = repo.update_publication(
+        publication.id,
+        youtube_video_id="yt-1",
+        youtube_uploaded_at="2026-09-25T02:00:00+00:00",
     )
+    assert updated.youtube_video_id == "yt-1"
+    assert repo.next_pending_publication(ChannelPlatform.YOUTUBE).id == later.id  # type: ignore[union-attr]
+    # Other platforms still see the first clip as pending.
+    next_pending = repo.next_pending_publication(ChannelPlatform.INSTAGRAM)
+    assert next_pending is not None
+    assert next_pending.id == publication.id
 
-    assert len(clips) == 2
-    assert clips[1].start_seconds == 40
-    assert clips[0].metadata_ready is True
-    assert clips[0].enhancement_complete is False
-    assert updated.output_path == "short-001.mp4"
-    assert updated.thumbnail_path == "thumbnail-001.jpg"
-    assert updated.youtube_url == "https://youtube.com/shorts/youtube-1"
-
-    previous = repository.reset_clip_media(job.id)
-    reset = repository.list_clips(job.id)[0]
-    assert previous[0].youtube_video_id == "youtube-1"
-    assert reset.metadata_ready is False
-    assert reset.output_path is None
-    assert reset.thumbnail_path is None
-    assert reset.youtube_video_id is None
-
-
-def test_normalizes_stored_relative_facebook_reel_urls(tmp_path: Path) -> None:
-    database_path = tmp_path / "jobs.db"
-    repository = JobRepository(database_path)
-    job = repository.create(0, 0, "https://youtu.be/example")
-    repository.save_plans(
-        job.id,
-        [ShortPlan(0, 25, "First", "Description", "Caption")],
+    uploads = repo.count_platform_uploads_since(
+        ChannelPlatform.YOUTUBE, "2026-09-25T00:00:00+00:00"
     )
-    repository.update(
-        job.id,
-        facebook_video_id="facebook-id",
-        facebook_url="/reel/facebook-id/",
+    assert uploads == 1
+    uploads_old = repo.count_platform_uploads_since(
+        ChannelPlatform.YOUTUBE, "2026-09-26T00:00:00+00:00"
     )
-    repository.update_clip(
-        job.id,
-        1,
-        facebook_video_id="facebook-id",
-        facebook_url="/reel/facebook-id/",
-    )
-
-    reloaded = JobRepository(database_path)
-    normalized_job = reloaded.get(job.id)
-    normalized_clip = reloaded.list_clips(job.id)[0]
-
-    assert normalized_job is not None
-    assert normalized_job.facebook_url == "https://www.facebook.com/reel/facebook-id/"
-    assert normalized_clip.facebook_url == "https://www.facebook.com/reel/facebook-id/"
+    assert uploads_old == 0
 
 
-def test_lists_jobs_with_pending_platform_uploads(tmp_path: Path) -> None:
-    repository = JobRepository(tmp_path / "jobs.db")
-    job = repository.create(0, 0, "https://youtu.be/example")
-    repository.save_plans(
-        job.id,
-        [ShortPlan(0, 25, "First", "Description", "Caption")],
-    )
-    repository.update_clip(
-        job.id,
-        1,
-        output_path="short-001.mp4",
-        youtube_video_id="youtube-id",
-    )
-    repository.update(job.id, status=JobStatus.COMPLETE)
+def test_pending_counts(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    repo.add_publication(tmp_path / "a.mp4", title="A")
+    second = repo.add_publication(tmp_path / "b.mp4", title="B")
+    counts = repo.pending_publication_counts()
+    assert counts == {"YouTube": 2, "Instagram": 2, "Facebook": 2}
+    repo.update_publication(second.id, instagram_media_id="ig-1")
+    counts = repo.pending_publication_counts()
+    assert counts["Instagram"] == 1
+    assert counts["YouTube"] == 2
 
-    assert repository.pending_upload_counts() == {
-        "YouTube": 0,
-        "Instagram": 1,
-        "Facebook": 1,
-    }
-    assert repository.list_pending_upload_jobs(youtube=True, instagram=False, facebook=False) == []
-    assert repository.list_pending_upload_jobs(youtube=False, instagram=True, facebook=False) == [
-        repository.get(job.id)
-    ]
-    assert repository.list_pending_upload_jobs(youtube=False, instagram=False, facebook=True) == [
-        repository.get(job.id)
-    ]
+
+def test_update_publication_rejects_unknown_field(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    pub = repo.add_publication(tmp_path / "a.mp4", title="A")
+    try:
+        repo.update_publication(pub.id, nope="x")
+    except ValueError as exc:
+        assert "Unknown publication fields" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

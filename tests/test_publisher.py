@@ -3,143 +3,198 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from test_pipeline import FakeDownloader, FakeMedia, FakePlanner, FakeYouTubeUploader, settings_for
-
+from shorts_bot.config import Settings
 from shorts_bot.db import JobRepository
-from shorts_bot.models import ChannelPlatform, JobStatus
-from shorts_bot.pipeline import WorkflowPipeline, WorkflowServices
-from shorts_bot.publisher import (
-    platform_scheduling_enabled,
-    publish_platform,
-    run_due_publishes,
-)
+from shorts_bot.errors import UploadLimitError
+from shorts_bot.models import ChannelPlatform, InstagramUploadResult, ShortPlan
+from shorts_bot.publisher import Publisher
 
 
-def deferred_settings(tmp_path: Path):
+class FakeMedia:
+    def probe_duration(self, path: Path) -> float:
+        return 30.0
+
+
+class FakeYouTube:
+    def __init__(self) -> None:
+        self.uploads: list[str] = []
+
+    async def upload(
+        self,
+        video_path: Path,
+        plan: ShortPlan,
+        thumbnail_path: Path | None = None,
+    ) -> str:
+        assert video_path.read_bytes() == b"clip"
+        self.uploads.append(plan.title)
+        return f"yt-{len(self.uploads)}"
+
+
+class FakeInstagram:
+    def __init__(self) -> None:
+        self.uploads: list[str] = []
+
+    async def upload(self, video_path: Path, plan: ShortPlan) -> InstagramUploadResult:
+        self.uploads.append(plan.title)
+        return InstagramUploadResult(f"ig-{len(self.uploads)}", "https://instagram.com/reel/x")
+
+
+class LimitFacebook:
+    async def upload(self, video_path: Path, plan: ShortPlan) -> tuple[str, str]:
+        raise UploadLimitError("Facebook", "Meta limit reached")
+
+
+def _settings(tmp_path: Path) -> Settings:
+    base = Settings.from_env(env_file=None)
     return replace(
-        settings_for(tmp_path),
-        upload_instagram=False,
-        upload_facebook=False,
-        youtube_schedule_times="00:00",
+        base,
+        rights_acknowledged=True,
+        upload_youtube=True,
+        upload_instagram=True,
+        upload_facebook=True,
+        youtube_channel_id="UC123",
+        instagram_user_id="1789",
+        instagram_access_token="token",
+        facebook_page_id="123",
+        facebook_access_token="token",
         schedule_timezone="UTC",
-        archive_on_upload_limit=False,
-        open_upload_limit_folder=False,
+        work_dir=tmp_path / "work",
+        database_path=tmp_path / "work" / "jobs.db",
+        hotclip_watch_dir=tmp_path / "watch",
+        hotclip_export_dir=tmp_path / "exports",
     )
 
 
-def services_with_youtube() -> WorkflowServices:
-    return WorkflowServices(
-        downloader=FakeDownloader(),  # type: ignore[arg-type]
+_UNSET = object()
+
+
+def _publisher(
+    settings: Settings,
+    repository: JobRepository,
+    youtube=_UNSET,
+    instagram=_UNSET,
+    facebook=_UNSET,
+) -> Publisher:
+    return Publisher(
+        settings,
+        repository,
         media=FakeMedia(),  # type: ignore[arg-type]
-        planner=FakePlanner(),  # type: ignore[arg-type]
-        enhancer=None,
-        youtube_uploader=FakeYouTubeUploader(),  # type: ignore[arg-type]
-        instagram_uploader=None,
+        youtube=FakeYouTube() if youtube is _UNSET else youtube,  # type: ignore[arg-type]
+        instagram=FakeInstagram() if instagram is _UNSET else instagram,  # type: ignore[arg-type]
+        facebook=facebook if facebook is not _UNSET else None,  # type: ignore[arg-type]
     )
 
 
-async def render_pending_job(settings, repository, url: str) -> str:
-    """Run the pipeline with uploads deferred; returns the job id."""
-    job = repository.create(0, 0, url)
-    result = await WorkflowPipeline(
-        settings, repository, services_with_youtube()
-    ).process(job.id)
-    assert result.status == JobStatus.COMPLETE
-    clip = repository.list_clips(job.id)[0]
-    assert clip.output_path is not None and Path(clip.output_path).exists()
-    assert clip.youtube_video_id is None
-    return job.id
+def _add_clip(repository: JobRepository, tmp_path: Path, name: str, title: str) -> Path:
+    clip = tmp_path / "exports" / name
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"clip")
+    repository.add_publication(clip, title=title, description=f"{title} body")
+    return clip
 
 
-async def test_pipeline_defers_youtube_upload_when_scheduled(tmp_path: Path) -> None:
-    settings = deferred_settings(tmp_path)
+async def test_fifo_order(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
     repository = JobRepository(settings.database_path)
-    job_id = await render_pending_job(settings, repository, "https://youtu.be/defer")
-    result = repository.get(job_id)
-    assert result is not None
-    assert "YouTube uploads pending" in (result.progress_message or "")
+    _add_clip(repository, tmp_path, "clip-01.mp4", "First")
+    _add_clip(repository, tmp_path, "clip-02.mp4", "Second")
+
+    youtube = FakeYouTube()
+    publisher = _publisher(settings, repository, youtube=youtube)
+    published = await publisher.publish_platform(ChannelPlatform.YOUTUBE, max_uploads=2)
+    assert youtube.uploads == ["First", "Second"]
+    assert [pub.youtube_video_id for pub in published] == ["yt-1", "yt-2"]
 
 
-async def test_next_pending_clip_is_fifo_and_platform_specific(tmp_path: Path) -> None:
-    settings = deferred_settings(tmp_path)
+async def test_publish_platform_not_enabled(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), upload_facebook=False)
     repository = JobRepository(settings.database_path)
-    first = await render_pending_job(settings, repository, "https://youtu.be/first")
-    second = await render_pending_job(settings, repository, "https://youtu.be/second")
+    publisher = _publisher(settings, repository)
+    messages: list[str] = []
+    published = await publisher.publish_platform(ChannelPlatform.FACEBOOK, report=messages.append)
+    assert published == []
+    assert messages and "disabled" in messages[0]
 
-    pending = repository.next_pending_clip(ChannelPlatform.YOUTUBE)
-    assert pending is not None and pending.job_id == first
 
-    repository.update_clip(
-        first, 1, youtube_video_id="done", youtube_uploaded_at="2026-09-25T00:00:01+00:00"
+async def test_due_credits_drive_upload_count(tmp_path: Path) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        youtube_schedule_times="00:00",  # one slot already passed today (UTC)
+        youtube_uploads_per_slot=7,
     )
-    pending = repository.next_pending_clip(ChannelPlatform.YOUTUBE)
-    assert pending is not None and pending.job_id == second
-
-    # The Instagram column was never filled, so Instagram still sees the clip.
-    instagram_pending = repository.next_pending_clip(ChannelPlatform.INSTAGRAM)
-    assert instagram_pending is not None and instagram_pending.job_id == first
-
-
-async def test_publish_platform_uploads_oldest_clip(tmp_path: Path) -> None:
-    settings = deferred_settings(tmp_path)
     repository = JobRepository(settings.database_path)
-    job_id = await render_pending_job(settings, repository, "https://youtu.be/pub")
+    for index in range(3):
+        _add_clip(repository, tmp_path, f"clip-{index}.mp4", f"Clip {index}")
 
-    published = await publish_platform(
-        settings,
-        repository,
-        services_with_youtube(),
-        ChannelPlatform.YOUTUBE,
-        max_uploads=1,
-    )
-    assert len(published) == 1
-    clip = repository.list_clips(job_id)[0]
-    assert clip.youtube_video_id == "youtube-id"
+    publisher = _publisher(settings, repository)
+    published = await publisher.publish_due(ChannelPlatform.YOUTUBE)
+    assert len(published) == 3  # only three queued, though 7 owed
 
-    count = repository.count_platform_uploads_since(
-        ChannelPlatform.YOUTUBE, "2000-01-01T00:00:00+00:00"
-    )
-    assert count == 1
+    # The DB timestamps consumed the slot credit partially; re-running keeps 4 owed.
+    for index in range(4):
+        _add_clip(repository, tmp_path, f"clip-9{index}.mp4", f"Catchup {index}")
+    published_again = await publisher.publish_due(ChannelPlatform.YOUTUBE)
+    assert len(published_again) == 4
+    # Slot fully consumed now.
+    assert await publisher.publish_due(ChannelPlatform.YOUTUBE) == []
 
 
-async def test_publish_platform_no_pending(tmp_path: Path) -> None:
-    settings = deferred_settings(tmp_path)
+async def test_facebook_limit_pauses_and_keeps_pending(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
     repository = JobRepository(settings.database_path)
-    published = await publish_platform(
-        settings,
-        repository,
-        services_with_youtube(),
-        ChannelPlatform.YOUTUBE,
-        max_uploads=1,
+    _add_clip(repository, tmp_path, "clip.mp4", "Solo")
+
+    publisher = _publisher(settings, repository, facebook=LimitFacebook())
+    published = await publisher.publish_platform(
+        ChannelPlatform.FACEBOOK,
+        max_uploads=5,
     )
     assert published == []
+    pending = repository.next_pending_publication(ChannelPlatform.FACEBOOK)
+    assert pending is not None  # still queued for the next run
 
 
-async def test_publish_platform_disabled_without_schedule(tmp_path: Path) -> None:
-    settings = replace(deferred_settings(tmp_path), youtube_schedule_times="")
+async def test_publish_no_schedule_configured(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)  # no schedules set by default
     repository = JobRepository(settings.database_path)
-    published = await publish_platform(
-        settings,
-        repository,
-        services_with_youtube(),
-        ChannelPlatform.YOUTUBE,
-    )
+    publisher = _publisher(settings, repository)
+    assert await publisher.publish_due(ChannelPlatform.YOUTUBE) == []
+
+
+async def test_missing_file_marks_error_and_stops(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    repository = JobRepository(settings.database_path)
+    ghost = tmp_path / "exports" / "ghost.mp4"
+    ghost.parent.mkdir(parents=True, exist_ok=True)
+    ghost.write_bytes(b"clip")
+    repository.add_publication(ghost, title="Ghost")
+    ghost.unlink()
+
+    publisher = _publisher(settings, repository)
+    published = await publisher.publish_platform(ChannelPlatform.YOUTUBE, max_uploads=1)
     assert published == []
-    assert platform_scheduling_enabled(settings, ChannelPlatform.YOUTUBE) is False
-    assert platform_scheduling_enabled(settings, ChannelPlatform.INSTAGRAM) is False
+    publication = repository.list_publications()[0]
+    assert publication.error is not None
 
 
-async def test_run_due_publishes_uses_daily_credits(tmp_path: Path) -> None:
-    settings = deferred_settings(tmp_path)
+class FakeFacebook:
+    def __init__(self) -> None:
+        self.uploads: list[str] = []
+
+    async def upload(self, video_path: Path, plan: ShortPlan) -> tuple[str, str]:
+        self.uploads.append(plan.title)
+        return "fb-1", "https://www.facebook.com/reel/fb-1"
+
+
+async def test_cleanup_deletes_clip_when_fully_published(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), delete_uploaded_clips=True)
     repository = JobRepository(settings.database_path)
-    first = await render_pending_job(settings, repository, "https://youtu.be/c1")
-    await render_pending_job(settings, repository, "https://youtu.be/c2")
+    clip_path = _add_clip(repository, tmp_path, "solo.mp4", "Solo")
+    publisher = _publisher(settings, repository, facebook=FakeFacebook())
 
-    # One slot ("00:00" UTC) has passed today, so exactly one upload is owed.
-    published = await run_due_publishes(settings, repository, services_with_youtube())
-    assert len(published) == 1
-    assert published[0].job_id == first
-
-    # Second run: the credit is already consumed by the DB timestamp, so no more.
-    published_again = await run_due_publishes(settings, repository, services_with_youtube())
-    assert published_again == []
+    await publisher.publish_platform(ChannelPlatform.YOUTUBE, max_uploads=1)
+    assert clip_path.exists()  # still waiting for Instagram/Facebook
+    await publisher.publish_platform(ChannelPlatform.INSTAGRAM, max_uploads=1)
+    assert clip_path.exists()  # still waiting for Facebook
+    await publisher.publish_platform(ChannelPlatform.FACEBOOK, max_uploads=1)
+    assert not clip_path.exists()  # published everywhere, file cleaned up
