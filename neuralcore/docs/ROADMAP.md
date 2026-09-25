@@ -1,7 +1,10 @@
 # Roadmap — from this toy to the final experiment
 
-Status: **Phase 1–4 complete at toy scale** (this repository). Each phase
-below states what exists, what is added, and how it is measured.
+Status: **Phase 1–4 complete at toy scale, Phase 7 (compression) started**
+(this repository). The primary metric is now **capability per byte**: how
+much learned capability survives in how few bytes of persistent state
+(`neuralcore/compression.py`). Each phase below states what exists, what is
+added, and how it is measured.
 
 ---
 
@@ -80,7 +83,14 @@ Honest expectations: we do **not** assume a 35M model collapses to a literal
 experiment quantifies how *small* the state can get while external memory
 stays exactly zero.
 
-## Phase 7 — COMPRESSION ⬜
+## Phase 7 — COMPRESSION ◳ (started — now the primary goal)
+
+Measured at toy scale (`python3 -m neuralcore.compression`):
+- size axis: minimal brain at full capability = 37k params (the 7×-bigger
+  brain gains nothing; the 4×-smaller one collapses to 0.66 capability)
+- prune axis: capability flat through 60% of synapses removed (slightly
+  improving at 20–40%), cliff at ~90%
+- the scheduler exists to widen that plateau under continual learning
 
 - Prune (exists: sleep prunes dead synapses), then quantize brain files
   (int8/dynamic), then architecturally shrink until interference reappears —

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .perception import Experience
+from .perception import Experience, normalize_word
 
 # Four sequential experience blocks — the "Learn A, Learn B, Learn C, Learn D" test.
 SETS: dict[str, list[tuple[str, str, str]]] = {
@@ -150,3 +150,35 @@ def build_probes() -> Probes:
             },
         ],
     )
+
+
+def _norm_triples(set_names: list[str]) -> set[tuple[str, str, str]]:
+    triples = set()
+    for name in set_names:
+        for s, r, o in SETS[name]:
+            triples.add((s, normalize_word(r), normalize_word(o)))
+    return triples
+
+
+def probes_for_sets(set_names: list[str]) -> Probes:
+    """The never-trained probe families, restricted to the knowledge acquired
+    so far — this is what 'test on unseen experience' means mid-stream."""
+    triples = _norm_triples(set_names)
+    base = build_probes()
+
+    para = []
+    for p in base.paraphrase:
+        s, r = p["query"]
+        r = normalize_word(r)
+        o = normalize_word(p["expect"])
+        fact = (o, r[4:], s) if r.startswith("inv_") else (s, r, o)
+        if fact in triples:
+            para.append(p)
+
+    chains = []
+    for c in base.chains:
+        hops = [(h[0], normalize_word(h[1]), normalize_word(h[2])) for h in c["hops"]]
+        if all(hop in triples for hop in hops):
+            chains.append(c)
+
+    return Probes(paraphrase=para, chains=chains, unseen_combos=[])

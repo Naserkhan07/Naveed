@@ -41,6 +41,8 @@ def train_brain(
     seed: int = 0,
     sets: list[str] | None = None,
     log=None,
+    config: BrainConfig | None = None,
+    epochs_per_set: int | None = None,
 ):
     """Live one continual-learning stream. Returns (brain, accuracy_matrix).
 
@@ -52,33 +54,28 @@ def train_brain(
         question, not magic.
     """
     log = log or (lambda *a, **k: None)
-    big = size == "full"
-    cfg = BrainConfig(
-        seed=seed,
-        gate_lambda=MODES.get(mode, 15.0),
-        dim=64 if not big else 256,
-        hidden=128 if not big else 512,
-        sparsity_k=24 if not big else 48,
-    )
-    brain = Brain.build(cfg)
-    cur = Curriculum(epochs_per_set=24 if not big else 20)
+    if config is None:
+        big = size == "full"
+        config = BrainConfig(
+            seed=seed,
+            gate_lambda=MODES.get(mode, 15.0),
+            dim=64 if not big else 256,
+            hidden=128 if not big else 512,
+            sparsity_k=24 if not big else 48,
+        )
+    brain = Brain.build(config)
+    cur = Curriculum(epochs_per_set=epochs_per_set or 24)
     set_names = sets or cur.set_names()
-    perc = brain.perceiver()
+
+    # training runs through THE LOOP (stages 1-7): experience ->
+    # representation -> state -> predict -> self-experience -> plasticity
+    from .loop import NeuralLoop
+
+    loop = NeuralLoop(brain, self_affirm_weight=0.0 if mode == "naive" else 0.15, log=None)
 
     matrix: list[dict[str, float]] = []
     for set_name in set_names:
-        exps = cur.set_experiences(set_name)
-        for _ in range(cur.epochs_per_set):
-            brain.state.reset()          # each pass re-lives the block in sequence
-            for exp in exps:
-                x = perc.encode_query(exp.subject, exp.relation, state_h=brain.state.h)
-                target = brain.vocab.get(exp.object)
-                upd = brain.net.compute_update(x, target)
-                upd.scale(LEARNING_RATE)
-                brain.scheduler.observe(upd)          # importance from the raw impulse
-                brain.net.apply_update(brain.scheduler.protect(upd))
-                brain.state.update(x)                  # State(t+1)
-
+        loop.live_block(set_name, epochs=cur.epochs_per_set, lr=LEARNING_RATE)
         row = metrics.evaluate_all(brain, set_names=set_names)
         matrix.append(row)
         brain.scheduler.end_block()  # promote this block's importance traces

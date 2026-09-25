@@ -37,8 +37,8 @@ def evaluate_all(brain, set_names=None) -> dict[str, float]:
     return {n: evaluate_set(brain, n)[0] for n in names}
 
 
-def evaluate_paraphrase(brain) -> tuple[float, list[dict]]:
-    probes = build_probes().paraphrase
+def evaluate_paraphrase(brain, probes=None) -> tuple[float, list[dict]]:
+    probes = (probes.paraphrase if probes is not None else build_probes().paraphrase)
     results, correct = [], 0
     for p in probes:
         subj, rel = p["query"]
@@ -51,9 +51,9 @@ def evaluate_paraphrase(brain) -> tuple[float, list[dict]]:
     return correct / len(probes), results
 
 
-def evaluate_composition(brain) -> tuple[float, list[dict]]:
+def evaluate_composition(brain, probes=None) -> tuple[float, list[dict]]:
     """Chain hops through the network's own outputs — no search, no lookup."""
-    probes = build_probes().chains
+    probes = (probes.chains if probes is not None else build_probes().chains)
     results, correct = [], 0
     for chain in probes:
         hops_ok, trace, entity = True, [], None
