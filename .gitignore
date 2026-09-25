@@ -25,6 +25,3 @@ cookies.txt
 # Editors / OS
 .idea/
 .DS_Store
-
-# neuralcore artifacts
-neuralcore_output/
