@@ -1,6 +1,6 @@
 # Local Groq Shorts + Instagram Reels Automation
 
-This project runs entirely on your laptop from VS Code. `main.py` includes a lightweight local Splitzzz storefront, so there is no separate web-server or Docker installation requirement.
+This project runs entirely on your laptop from VS Code. There is no separate web-server or Docker installation requirement.
 
 Add authorized YouTube links to `links.txt`. The local program downloads each video, removes its link after a successful download, divides the usable timeline into consecutive 20–30 second clips based on the video's duration, generates detailed AI metadata and thumbnails, renders vertical Shorts, and publishes each one to YouTube, Instagram, and Facebook.
 
@@ -20,7 +20,6 @@ Add authorized YouTube links to `links.txt`. The local program downloads each vi
 10. When enabled, temporarily hosts selected clips and runs API.market Real-ESRGAN before upload.
 11. Generates a JPEG thumbnail from the final (enhanced or original) clip.
 12. Uploads every result as a public YouTube Short, Instagram Reel, and Facebook Page Reel, using a custom YouTube thumbnail when eligible and a midpoint cover frame on Instagram.
-13. Collects every 50 eligible rendered clips into a verified local Splitzzz ZIP pack.
 
 A downloaded URL is removed before AI/render/upload starts. If a later stage fails, the URL remains in `work/downloaded-links.log`; copy it back into `links.txt` when you want to retry.
 
@@ -36,21 +35,6 @@ A downloaded URL is removed before AI/render/upload starts. If a later stage fai
 - `work/jobs/<job-id>/short-001.mp4`, `short-002.mp4`, … — rendered Shorts/Reels
 - `work/jobs/<job-id>/thumbnail-001.jpg`, `thumbnail-002.jpg`, … — generated covers
 - `work/downloaded-links.log` — downloaded URL audit history
-- `store-bundles/splitzzz-reels-pack-001-50-reels.zip` — permanent local store packs
-- `website/` — Vercel-ready Splitzzz storefront
-
-## Splitzzz Reel packs and storefront
-
-Every 50 rendered clips that have not appeared in an earlier pack are written to one integrity-checked
-ZIP under `store-bundles/`. MP4 files use stable names from `reel-001.mp4` through
-`reel-050.mp4`; a manifest and SHA-256 sidecar are generated, and local packs are never committed to
-Git. The storefront advertises 50 Reels for ₹300 and a 100-Reel value bundle (two 50-Reel ZIPs) for
-₹500. Set the Vercel project's Root Directory to `website` when deploying.
-
-Local ZIP creation works without cloud credentials. When all four `R2_*` settings are supplied, the
-same verified ZIP is uploaded to a private Cloudflare R2 bucket and recorded in SQLite. The public
-site never receives permanent object URLs: only a server-verified paid Razorpay order can receive a
-15-minute signed download URL. Never place paid ZIPs in `website/public` or the Git repository.
 
 ## Do not save account passwords
 
@@ -332,24 +316,20 @@ Save the file. Blank lines and comments beginning with `#` are preserved.
 
 Open **Run and Debug**, select **Run local Shorts automation**, and press **F5**.
 
-### VS Code terminal — bot and website together
+### VS Code terminal
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-That single command starts the queue bot, serves the Splitzzz storefront locally, and opens it in the
-default browser. The terminal prints:
+That single command starts the queue bot. The terminal prints:
 
 ```text
-Splitzzz website started: http://localhost:8080
 Local watcher started. Add YouTube URLs to links.txt. Press Ctrl+C to stop.
 ```
 
-`Ctrl+C` stops both services cleanly. If port 8080 is occupied, the launcher tries the next available
-port through 8089 and prints the selected address. The local static preview does not emulate Vercel's
-Razorpay/R2 serverless APIs; secure checkout remains available only on the deployed Vercel site.
-The watcher checks `links.txt` every 30 seconds and processes jobs sequentially.
+`Ctrl+C` stops the watcher cleanly. The watcher checks `links.txt` every 30 seconds and processes
+jobs sequentially.
 
 ### Process the current file once
 
@@ -464,13 +444,6 @@ shorts-cli --platform none "https://youtu.be/VIDEO_ID"
 | `FACEBOOK_PAGE_ID` | empty | Numeric Facebook Page ID; can be stored in `channels.toml` |
 | `FACEBOOK_ACCESS_TOKEN` | Instagram token | Long-lived Page token with `pages_manage_posts` |
 | `FACEBOOK_GRAPH_API_VERSION` | `v26.0` | Facebook Reels API version |
-| `STORE_BUNDLES_ENABLED` | `true` | Create verified local Splitzzz Reel ZIP packs |
-| `STORE_BUNDLE_SIZE` | `50` | Number of MP4 Reels in every local ZIP pack |
-| `STORE_BUNDLE_DIR` | `store-bundles` | Permanent local copies of store ZIP packs |
-| `R2_ACCOUNT_ID` | empty | Cloudflare account identifier for optional private website uploads |
-| `R2_ACCESS_KEY_ID` | empty | Secret local R2 API credential; never commit it |
-| `R2_SECRET_ACCESS_KEY` | empty | Secret local R2 API credential; never commit it |
-| `R2_BUCKET_NAME` | empty | Private bucket holding paid ZIP products |
 | `LINKS_FILE` | `links.txt` | Local URL queue |
 | `DOWNLOADED_LINKS_LOG` | `work/downloaded-links.log` | Download audit log |
 | `LINKS_POLL_SECONDS` | `30` | Queue interval, 5–3600 seconds |
@@ -497,12 +470,7 @@ shorts-cli --platform none "https://youtu.be/VIDEO_ID"
 | `WORK_DIR` | `work` | Local media directory |
 | `DATABASE_PATH` | `work/jobs.db` | Local SQLite history |
 | `KEEP_WORK_FILES` | `true` | Keep the job folder (source video) after publishing |
-| `DELETE_UPLOADED_CLIPS` | `true` | Delete each clip MP4/thumbnail once it is published on every platform and bundled |
-| `START_LOCAL_WEBSITE` | `true` | Start the storefront together with `main.py` |
-| `LOCAL_WEBSITE_HOST` | `127.0.0.1` | Keep the local preview accessible only from this computer |
-| `LOCAL_WEBSITE_PORT` | `8080` | Preferred local storefront port; launcher can fall forward to 8089 |
-| `LOCAL_WEBSITE_AUTO_OPEN` | `true` | Open the storefront automatically in the default browser |
-| `LOCAL_WEBSITE_DIRECTORY` | `website/public` | Static storefront files served by the one-command launcher |
+| `DELETE_UPLOADED_CLIPS` | `true` | Delete each clip MP4/thumbnail once it is published on every platform |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
 ## Test locally

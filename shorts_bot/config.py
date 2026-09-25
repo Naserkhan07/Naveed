@@ -141,13 +141,6 @@ class Settings:
     database_path: Path
     keep_work_files: bool
     delete_uploaded_clips: bool
-    store_bundles_enabled: bool
-    store_bundle_size: int
-    store_bundle_dir: Path
-    r2_account_id: str
-    r2_access_key_id: str
-    r2_secret_access_key: str
-    r2_bucket_name: str
     rights_acknowledged: bool
     links_file: Path
     downloaded_links_log: Path
@@ -267,13 +260,6 @@ class Settings:
             database_path=database_path,
             keep_work_files=_bool_env("KEEP_WORK_FILES", True),
             delete_uploaded_clips=_bool_env("DELETE_UPLOADED_CLIPS", True),
-            store_bundles_enabled=_bool_env("STORE_BUNDLES_ENABLED", True),
-            store_bundle_size=_int_env("STORE_BUNDLE_SIZE", 50),
-            store_bundle_dir=Path(os.getenv("STORE_BUNDLE_DIR", "store-bundles")).expanduser(),
-            r2_account_id=os.getenv("R2_ACCOUNT_ID", "").strip(),
-            r2_access_key_id=os.getenv("R2_ACCESS_KEY_ID", "").strip(),
-            r2_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY", "").strip(),
-            r2_bucket_name=os.getenv("R2_BUCKET_NAME", "").strip(),
             rights_acknowledged=_bool_env("RIGHTS_ACKNOWLEDGED", False),
             links_file=Path(os.getenv("LINKS_FILE", "links.txt")).expanduser(),
             downloaded_links_log=Path(
@@ -335,19 +321,6 @@ class Settings:
             raise ConfigurationError("INSTAGRAM_GRAPH_API_VERSION must look like v26.0.")
         if not re.fullmatch(r"v\d+\.\d+", self.facebook_graph_api_version):
             raise ConfigurationError("FACEBOOK_GRAPH_API_VERSION must look like v26.0.")
-        if not 2 <= self.store_bundle_size <= 100:
-            raise ConfigurationError("STORE_BUNDLE_SIZE must be between 2 and 100.")
-        r2_values = (
-            self.r2_account_id,
-            self.r2_access_key_id,
-            self.r2_secret_access_key,
-            self.r2_bucket_name,
-        )
-        if any(r2_values) and not all(r2_values):
-            raise ConfigurationError(
-                "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and "
-                "R2_BUCKET_NAME must all be set together."
-            )
         if not 5 <= self.links_poll_seconds <= 3600:
             raise ConfigurationError("LINKS_POLL_SECONDS must be between 5 and 3600.")
         if not 5 <= self.credential_check_minutes <= 1_440:
@@ -486,5 +459,3 @@ class Settings:
         self.links_file.touch(exist_ok=True)
         self.downloaded_links_log.parent.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
-        if self.store_bundles_enabled:
-            self.store_bundle_dir.mkdir(parents=True, exist_ok=True)

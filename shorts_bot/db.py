@@ -55,26 +55,6 @@ CREATE TABLE IF NOT EXISTS job_clips (
     FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_job_clips_job ON job_clips(job_id, clip_index);
-
-CREATE TABLE IF NOT EXISTS store_bundles (
-    bundle_number INTEGER PRIMARY KEY,
-    zip_path TEXT NOT NULL,
-    clip_count INTEGER NOT NULL,
-    website_object_key TEXT,
-    website_uploaded_at TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS store_bundle_clips (
-    bundle_number INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    job_id TEXT NOT NULL,
-    clip_index INTEGER NOT NULL,
-    PRIMARY KEY (job_id, clip_index),
-    UNIQUE (bundle_number, position),
-    FOREIGN KEY (bundle_number) REFERENCES store_bundles(bundle_number) ON DELETE CASCADE,
-    FOREIGN KEY (job_id, clip_index) REFERENCES job_clips(job_id, clip_index) ON DELETE CASCADE
-);
 """
 
 _MIGRATION_COLUMNS = {
@@ -91,10 +71,6 @@ _CLIP_MIGRATION_COLUMNS = {
     "enhancement_complete": "INTEGER NOT NULL DEFAULT 0",
     "facebook_video_id": "TEXT",
     "facebook_url": "TEXT",
-}
-_STORE_BUNDLE_MIGRATION_COLUMNS = {
-    "website_object_key": "TEXT",
-    "website_uploaded_at": "TEXT",
 }
 
 
@@ -117,14 +93,6 @@ class JobRepository:
             for name, column_type in _CLIP_MIGRATION_COLUMNS.items():
                 if name not in existing_clip_columns:
                     connection.execute(f"ALTER TABLE job_clips ADD COLUMN {name} {column_type}")
-
-            existing_store_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(store_bundles)").fetchall()
-            }
-            for name, column_type in _STORE_BUNDLE_MIGRATION_COLUMNS.items():
-                if name not in existing_store_columns:
-                    connection.execute(f"ALTER TABLE store_bundles ADD COLUMN {name} {column_type}")
 
             # Meta can return Page Reel permalinks as paths such as /reel/123/. Normalize
             # previously stored values so manifests and progress output always contain links.
@@ -448,35 +416,6 @@ class JobRepository:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def list_unbundled_clips(self, limit: int = 500) -> list[JobClip]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT job_clips.*
-                FROM job_clips
-                JOIN jobs ON jobs.id = job_clips.job_id
-                LEFT JOIN store_bundle_clips
-                  ON store_bundle_clips.job_id = job_clips.job_id
-                 AND store_bundle_clips.clip_index = job_clips.clip_index
-                WHERE store_bundle_clips.job_id IS NULL
-                  AND job_clips.output_path IS NOT NULL
-                  AND job_clips.metadata_ready = 1
-                ORDER BY jobs.created_at, job_clips.clip_index
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [self._clip_from_row(row) for row in rows]
-
-    def bundled_clip_indexes(self, job_id: str) -> set[int]:
-        """Clip indexes of this job that are already part of a Splitzzz store bundle."""
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT clip_index FROM store_bundle_clips WHERE job_id = ?",
-                (job_id,),
-            ).fetchall()
-        return {int(row["clip_index"]) for row in rows}
-
     def clip_sequence_index(self, job_id: str, clip_index: int) -> int:
         with self._connect() as connection:
             current = connection.execute(
@@ -497,69 +436,6 @@ class JobRepository:
                 (current["created_at"], current["created_at"], job_id, job_id, clip_index),
             ).fetchone()
         return int(row["preceding"])
-
-    def next_store_bundle_number(self) -> int:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(MAX(bundle_number), 0) + 1 AS next_number FROM store_bundles"
-            ).fetchone()
-        return int(row["next_number"])
-
-    def save_store_bundle(
-        self,
-        bundle_number: int,
-        zip_path: Path,
-        clips: list[JobClip],
-    ) -> None:
-        now = self._now()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO store_bundles (bundle_number, zip_path, clip_count, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (bundle_number, str(zip_path), len(clips), now),
-            )
-            for position, clip in enumerate(clips, start=1):
-                connection.execute(
-                    """
-                    INSERT INTO store_bundle_clips (
-                        bundle_number, position, job_id, clip_index
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (bundle_number, position, clip.job_id, clip.clip_index),
-                )
-
-    def list_store_bundles(self) -> list[dict[str, object]]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM store_bundles ORDER BY bundle_number"
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def list_pending_store_uploads(self) -> list[dict[str, object]]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM store_bundles
-                WHERE website_object_key IS NULL
-                ORDER BY bundle_number
-                """
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def mark_store_bundle_uploaded(self, bundle_number: int, object_key: str) -> None:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE store_bundles
-                SET website_object_key = ?, website_uploaded_at = ?
-                WHERE bundle_number = ?
-                """,
-                (object_key, self._now(), bundle_number),
-            )
-            if cursor.rowcount != 1:
-                raise KeyError(f"Unknown store bundle {bundle_number}")
 
     def fail_interrupted(self) -> int:
         running = (

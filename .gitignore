@@ -13,9 +13,6 @@ information.txt
 *.db-shm
 *.db-wal
 work/
-store-bundles/
-website/dist/
-website/node_modules/
 credentials/
 client_secret*.json
 youtube_token.json

@@ -21,7 +21,6 @@ from .facebook import FacebookReelUploader
 from .instagram import InstagramUploader
 from .media import MediaProcessor
 from .models import Job, JobClip, JobStatus, ShortPlan, SourceVideo
-from .store_bundles import R2BundleUploader, ReelBundleBuilder
 from .youtube import YouTubeUploader
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,6 @@ class WorkflowServices:
     youtube_uploader: YouTubeUploader | None
     instagram_uploader: InstagramUploader | None
     facebook_uploader: FacebookReelUploader | None = None
-    bundle_builder: ReelBundleBuilder | None = None
     unavailable_platforms: dict[str, str] = field(default_factory=dict)
     # monotonic time until which a platform is skipped after an upload-limit
     # error, so Meta spam-protection blocks are allowed to lift instead of
@@ -162,24 +160,6 @@ class WorkflowServices:
                     api_version=settings.facebook_graph_api_version,
                 )
                 if settings.upload_facebook
-                else None
-            ),
-            bundle_builder=(
-                ReelBundleBuilder(
-                    settings.store_bundle_dir,
-                    settings.store_bundle_size,
-                    uploader=(
-                        R2BundleUploader(
-                            settings.r2_account_id,
-                            settings.r2_access_key_id,
-                            settings.r2_secret_access_key,
-                            settings.r2_bucket_name,
-                        )
-                        if settings.r2_account_id
-                        else None
-                    ),
-                )
-                if settings.store_bundles_enabled
                 else None
             ),
         )
@@ -365,19 +345,6 @@ class WorkflowPipeline:
             else:
                 progress = f"Created {len(clips)} local Shorts"
 
-            if self.services.bundle_builder:
-                try:
-                    bundles = await asyncio.to_thread(
-                        self.services.bundle_builder.create_ready_bundles,
-                        self.repository,
-                    )
-                    if bundles:
-                        bundle_names = ", ".join(bundle.zip_path.name for bundle in bundles)
-                        progress += f"; local Splitzzz pack created: {bundle_names}"
-                except WorkflowError as exc:
-                    logger.warning("Store bundle creation is pending: %s", exc)
-                    progress += "; store bundle creation pending automatic retry"
-
             if self.settings.delete_uploaded_clips:
                 deleted_clip_files = self._delete_published_clip_files(job, clips)
                 if deleted_clip_files:
@@ -465,20 +432,14 @@ class WorkflowPipeline:
     def _delete_published_clip_files(self, job: Job, clips: list[JobClip]) -> int:
         """Remove local MP4s/thumbnails of clips that are published on every platform.
 
-        Files stay on disk while any enabled platform upload is pending, and, when
-        Splitzzz store bundles are enabled, until the clip is inside a bundle ZIP.
+        Files stay on disk while any enabled platform upload is still pending.
         """
-        bundled: set[int] | None = None
-        if self.services.bundle_builder:
-            bundled = self.repository.bundled_clip_indexes(job.id)
         job_dir = self.settings.work_dir / "jobs" / job.id
         removed = 0
         for clip in clips:
             if not clip.output_path:
                 continue
             if not self._clip_published_everywhere(clip):
-                continue
-            if bundled is not None and clip.clip_index not in bundled:
                 continue
             candidates = [
                 Path(clip.output_path),
