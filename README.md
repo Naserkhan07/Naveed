@@ -1,5 +1,7 @@
 # Shorts Autopilot — HotClip ↔ Scheduler
 
+> **[Open the live status panel](https://naserkhan07.github.io/Naveed/)** — dashboard, schedules, activity, and publication queue.
+
 A fully automated Shorts/Reels pipeline with two halves:
 
 1. **[HotClip](https://github.com/xixihhhh/hotclip)** (external, free, local) is the content
@@ -9,18 +11,15 @@ A fully automated Shorts/Reels pipeline with two halves:
 2. **This bot** is the discovery + distribution brain: it watches YouTube channels for new
    uploads, feeds them to HotClip, harvests the finished clips into a SQLite queue, and
    publishes them to **YouTube, Instagram, and Facebook at your own per-day times** with
-   configurable uploads per slot (2 per YouTube slot, 10 per Instagram/Facebook slot)
+   configurable uploads per slot (33 per YouTube slot, 10 per Instagram/Facebook slot)
    and a fixed hashtag block appended to every upload.
 
 ```
-channels.txt ──► download new uploads ──► hotclip-watch/  (HotClip 24/7 watch folder)
-                                                     │  (transcribe → cut → 9:16 + captions
-                                                     │   + cover + post copy, all local)
-hotclip-exports/ ──► intake scan ──► SQLite publication queue ──► scheduler
-                                                     │        YT 3 slots × 2 uploads
-                                                     │        IG 2 slots × 10 uploads
-                                                     │        FB 2 slots × 10 uploads
-                                                     └──── catch-up for missed slots
+channels.txt ──► unseen uploads from the last 4 days ──► hotclip-watch/
+                                                          │ HotClip clips
+hotclip-exports/ ──► intake ──► SQLite ready queue ──► platform-specific schedules
+                                  up to 99 finished clips   YT 3 slots × 33
+                                                          IG/FB 2 slots × 10 each
 ```
 
 > **Rights first:** only queue videos you own or have explicit permission/license to
@@ -30,19 +29,22 @@ hotclip-exports/ ──► intake scan ──► SQLite publication queue ──
 
 ## What runs automatically
 
-- Every `CHANNEL_SCAN_INTERVAL_MINUTES` (default 60), the newest uploads of every channel in
-  `channels.txt` are discovered via yt-dlp metadata (no YouTube API key).
-- Each new video is downloaded at best quality and dropped straight into HotClip's watch
-  folder; a (channel, video) pair is never delivered twice (SQLite memory).
-- HotClip (desktop app, or its headless `pnpm cli clip`) processes the watch folder 24/7
-  and writes finished clips into its export directory: `mp4` + cover JPG + `.post.txt`
-  + `clips.json` receipt.
-- The watcher picks finished clips from the export directory (never half-written files),
-  reads their copy, and queues them for publishing.
-- At each platform's configured slot times, the scheduler publishes the oldest queued
-  clips — `YOUTUBE_UPLOADS_PER_SLOT` per slot, etc. — with per-clip upload timestamps.
-- A slot that had nothing ready (or failed) keeps its credit: the scheduler **catches up**
-  automatically as soon as clips exist, then returns to the normal cadence.
+- Every `CHANNEL_SCAN_INTERVAL_MINUTES` (local default 60; cloud workflow 30), yt-dlp
+  checks up to 50 recent entries per creator in `channels.txt` (no YouTube API key).
+- Fallback candidates need a usable upload date/timestamp within the last 4 days and must
+  not have been processed before. Only this supplied creator list is scanned; undated or
+  older sources are skipped rather than risk reposting stale content.
+- Downloads are capped at 5 sources per scan. The bot aims to keep up to 99 finished,
+  unpublished clips ready, matching the configured 99/day YouTube target. This is a buffer
+  target, not a guarantee if recent sources or processing capacity are insufficient.
+- HotClip (desktop app, or its headless `pnpm cli clip`) processes the watch folder and
+  writes finished clips into its export directory: `mp4` + cover JPG + `.post.txt`
+  + `clips.json` receipt. Only finished exports are enrolled in the SQLite queue.
+- In the cloud workflow, already-queued clips are published first; new sources are then
+  harvested and clipped, and their finished exports are queued for the next scheduled run.
+- Each platform publishes only when its **own** schedule is due; per-platform timestamps
+  prevent duplicate uploads. Missed or failed slots retain catch-up credits until content
+  is available.
 - A **status panel** runs at http://localhost:8000 for as long as the watcher does — full
   live view of discoveries, deliveries, queue, credits, and publishes (see section 6).
 
@@ -91,12 +93,20 @@ Also install FFmpeg (only `ffprobe` is needed now) —
    approve in the browser. The token lands in `youtube_token.json`.
 4. `.env`: `UPLOAD_YOUTUBE=true`, `YOUTUBE_PRIVACY_STATUS=public`.
 
-> **Quota reality check (important):** the default YouTube Data API quota is
-> 10,000 units/day and one upload costs 1,600 units → **~6 uploads per day**. The reference
-> chart volume (21/day) needs a [quota increase request]
-> (https://support.google.com/youtube/contact/yt_api_form). Until approved, extra uploads
-> fail with quota errors and simply catch up on following days; the bot prints this warning
-> at startup.
+> **Current YouTube upload limits:** the default Data API project has a separate
+> `videos.insert` bucket of **100 upload calls/day**. The cloud schedule is set to
+> 3 slots × 33 uploads = **99/day**, under that API bucket. This is not a promise that
+> the channel can upload 99/day: YouTube does not publish a fixed channel limit; it can
+> vary by region and channel history. Advanced features provide a higher daily limit,
+> not a published number. See [videos.insert quota](https://developers.google.com/youtube/v3/docs/videos/insert)
+> and [YouTube daily upload limits](https://support.google.com/youtube/answer/10383400?hl=en).
+> If you hit a channel
+> limit, wait 24 hours; the bot keeps pending clips queued.
+>
+> **Public-upload audit:** API projects created after July 28, 2020 that have not passed
+> YouTube's API compliance audit can have API-uploaded videos restricted to private.
+> This audit is separate from OAuth consent and YouTube Studio feature eligibility; see
+> the [YouTube video resource documentation](https://developers.google.com/youtube/v3/docs/videos).
 
 ### Instagram + Facebook
 
@@ -168,6 +178,8 @@ section 9.
   published, last upload time, next slot, and the per-slot pace.
 - **Activity feed** — every discovery, HotClip delivery, queued clip, publish (with the
   live post link), upload limit, and error: *what happened, when, and where*.
+- **Ready-buffer meter** — finished clips available to all enabled platforms versus the
+  target, plus clips and sources still in preparation.
 - **Publication queue** — every clip with a ✓ (linked) or … pending cell per platform.
 - **Footer** — HotClip folders, hashtag count, channels, links pending, scan interval.
 
@@ -185,7 +197,7 @@ A standalone read-only view against the same database also works without the wat
 ```dotenv
 SCHEDULE_TIMEZONE=Asia/Kolkata
 YOUTUBE_SCHEDULE_TIMES=mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30
-YOUTUBE_UPLOADS_PER_SLOT=2
+YOUTUBE_UPLOADS_PER_SLOT=33
 INSTAGRAM_SCHEDULE_TIMES=mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30
 INSTAGRAM_UPLOADS_PER_SLOT=10
 FACEBOOK_SCHEDULE_TIMES=mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00
@@ -198,9 +210,11 @@ FACEBOOK_UPLOADS_PER_SLOT=10
 - Upload timestamps in `work/jobs.db` track what each platform already got today — so after
   a restart or overnight catch-up, credits stay exact (a missed slot publishes double later,
   not zero).
-- Shipped defaults mirror your reference charts (slot time = middle of each suggested
-  window): YouTube 3 slots/day × **2 uploads** (= 6/day, matching the default YouTube API
-  quota of ~6 uploads/day), Instagram 2 slots/day × 10, Facebook 2 slots/day × 10.
+- Cloud defaults spread uploads across the configured windows: YouTube 3 slots/day ×
+  **33 uploads** (= 99/day, below the default 100-call `videos.insert` API bucket),
+  Instagram 2 slots/day × 10, Facebook 2 slots/day × 10. YouTube’s channel-level daily
+  limit is separate and may be lower; lower the YouTube setting if the channel returns
+  `uploadLimitExceeded`.
 - If the queue runs dry, nothing is posted until HotClip produces more clips.
 
 A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake instead.
@@ -228,18 +242,18 @@ automatically — from the first tag down, as many as the platform accepts:
 
 ## 9. Run everything on GitHub — no local PC needed
 
-The autopilot lives entirely on GitHub: **nothing runs on your computer, ever**, and it
-never stops. It wakes on its own every 15 minutes (plus on every push to `main` and
-whenever you press "Run workflow"), does harvest → HotClip cloud clipping → scheduled
-publishing, and goes back to sleep until the next tick. State (queue DB, watch folder,
-exports, HotClip itself) persists between runs via GitHub caches, and a tiny monthly
-keepalive commit on the `autopilot-keepalive` branch stops GitHub from disabling
-scheduled runs after 60 days of repo inactivity.
+The autopilot runs on GitHub and wakes every 15 minutes (plus on pushes to `main` and
+manual runs). Each cycle first publishes clips already prepared for platforms whose own
+schedules are due, then harvests and clips recent unseen sources and queues finished work
+for the next cycle. State (queue DB, watch folder, exports, HotClip itself) persists between
+runs via GitHub caches, and a tiny monthly keepalive commit on the `autopilot-keepalive`
+branch stops GitHub from disabling scheduled runs after 60 days of repo inactivity.
 
-> Honest mechanics: GitHub schedulers are interval-based, not a literal 24/7 process,
-> and cron can run late. That's harmless here — the credit system publishes what is
-> owed whenever a run happens — so "always running" in practice means "it fires all
-> day, every day, forever, and catches up exactly".
+> Honest mechanics: GitHub Actions cron is best-effort, not an exact-minute scheduler;
+> starts can be delayed or skipped. When a run does start, per-platform catch-up credits
+> publish what is owed for that platform. The ready buffer reduces waiting on clipping,
+> but cannot guarantee an exact upload time or a full buffer when recent sources or
+> processing capacity are insufficient.
 
 ### Your dashboard is always online — no localhost needed
 
@@ -283,8 +297,11 @@ an always-on PC; the localhost panel and the Pages dashboard are the same page.
 | `HOTCLIP_EXPORT_DIR` | `hotclip-exports` | Folder HotClip writes finished clips to |
 | `HOTCLIP_MIN_CLIP_AGE_SECONDS` | `90` | Min file age before a clip counts as finished |
 | `CHANNELS_FILE` | `channels.txt` | Channel list for automatic discovery |
-| `CHANNEL_SCAN_MAX_VIDEOS` | `5` | Newest uploads inspected per channel per scan (1–50) |
-| `CHANNEL_SCAN_INTERVAL_MINUTES` | `60` | How often channels are re-scanned (5–1440) |
+| `CHANNEL_SCAN_MAX_VIDEOS` | `50` | Newest uploads inspected per channel per scan (1–50) |
+| `CHANNEL_SCAN_INTERVAL_MINUTES` | `60` | How often channels are re-scanned (5–1440; cloud: 30) |
+| `CHANNEL_FALLBACK_LOOKBACK_DAYS` | `4` | Maximum source-video age for creator-list fallback (1–30) |
+| `CHANNEL_MAX_SOURCES_PER_SCAN` | `5` | New source downloads allowed in one scan (1–50) |
+| `READY_CLIP_BUFFER_TARGET` | `99` | Target number of finished clips ready for all enabled platforms |
 | `LINKS_FILE` | `links.txt` | Manual URL queue (processed first) |
 | `LINKS_POLL_SECONDS` | `30` | Watcher tick (5–3600) |
 | `WORK_DIR` / `DATABASE_PATH` | `work` / `work/jobs.db` | Staging and the SQLite queue |
@@ -339,8 +356,11 @@ an always-on PC; the localhost panel and the Pages dashboard are the same page.
 - **"Sign in to confirm you're not a bot" (YouTube download):** export Netscape cookies to
   `youtube-cookies.txt` and set `YTDLP_COOKIE_FILE=youtube-cookies.txt`, or use
   `YTDLP_COOKIES_FROM_BROWSER=firefox`.
-- **YouTube `quotaExceeded`:** expected beyond ~6 uploads/day on the default quota; clips
-  stay queued and publish on later days. Request a quota increase for 21/day.
+- **YouTube `quotaExceeded`:** the default `videos.insert` bucket is 100 upload calls/day
+  per API project; the cloud schedule targets 99/day. Check the project’s Quotas page if
+  the API bucket is exhausted. The channel’s own daily upload cap is separate and variable;
+  when YouTube returns `uploadLimitExceeded`, wait 24 hours and lower the schedule if needed.
+  Clips remain queued.
 - **Instagram/Facebook token expired:** re-run `python -m shorts_bot.instagram_token
   --facebook`; Meta long-lived tokens last ~60 days.
 - **Clips are discovered but never publish:** check pending counts in the watcher log,

@@ -12,8 +12,10 @@ from shorts_bot.file_queue import (
     LinkFileQueue,
     _safe_stem,
     parse_stages,
+    run_file_queue,
 )
 from shorts_bot.models import SourceVideo
+from shorts_bot.publisher import Publisher
 
 WORK = "https://youtu.be/example"
 
@@ -120,6 +122,72 @@ async def test_intake_exports_enrolls_new_clips_once(tmp_path: Path) -> None:
 def test_safe_stem() -> None:
     assert _safe_stem("Hello, World!") == "Hello-World"
     assert _safe_stem("") == "video"
+
+
+async def test_channel_scan_skips_discovery_when_ready_buffer_is_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        rights_acknowledged=True,
+        ready_clip_buffer_target=1,
+    )
+    settings.channels_file.write_text("@authorized-creator\n", encoding="utf-8")
+    settings.hotclip_export_dir.mkdir(parents=True, exist_ok=True)
+    clip = settings.hotclip_export_dir / "ready.mp4"
+    clip.write_bytes(b"clip")
+    repository = JobRepository(settings.database_path)
+    repository.add_publication(clip, title="Ready clip")
+
+    def fail_if_discovered(*args: object, **kwargs: object) -> tuple[list[object], list[str]]:
+        raise AssertionError("channel discovery should be skipped for a full buffer")
+
+    monkeypatch.setattr("shorts_bot.file_queue.discover_new_videos", fail_if_discovered)
+    result = await run_file_queue(
+        settings,
+        watch=False,
+        stages=frozenset({"channels"}),
+    )
+
+    assert result == 0
+
+
+async def test_full_cycle_publishes_before_slow_source_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = tmp_path / "youtube-token.json"
+    token.write_text("{}", encoding="utf-8")
+    settings = replace(
+        _settings(tmp_path),
+        rights_acknowledged=True,
+        upload_youtube=True,
+        youtube_channel_id="UC" + "a" * 22,
+        youtube_token_file=token,
+        upload_instagram=False,
+        upload_facebook=False,
+    )
+    events: list[str] = []
+
+    async def fake_publish_all_due(self, report=None) -> None:  # noqa: ANN001
+        events.append("publish")
+
+    def fake_pending_urls(self) -> list[str]:  # noqa: ANN001
+        events.append("download")
+        return []
+
+    monkeypatch.setattr(Publisher, "publish_all_due", fake_publish_all_due)
+    monkeypatch.setattr(LinkFileQueue, "pending_urls", fake_pending_urls)
+
+    result = await run_file_queue(
+        settings,
+        watch=False,
+        stages=frozenset({"download", "publish"}),
+    )
+
+    assert result == 0
+    assert events == ["publish", "download"]
 
 
 def test_parse_stages_defaults_to_everything_and_validates() -> None:

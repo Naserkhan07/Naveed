@@ -35,6 +35,7 @@ from .db import JobRepository
 from .downloader import is_youtube_url
 from .hashtags import load_hashtags
 from .models import ChannelPlatform, Publication
+from .readiness import finished_ready_clip_count, ready_buffer_occupancy
 from .scheduler import (
     PlatformSchedule,
     due_credits,
@@ -234,6 +235,8 @@ def build_status(settings: Settings, repository: JobRepository) -> dict[str, obj
         platforms.append(entry)
 
     hashtag_count = len(load_hashtags(settings.hashtags_file)) if settings.hashtags_enabled else 0
+    ready_clips = finished_ready_clip_count(settings, repository)
+    buffer_occupancy = ready_buffer_occupancy(settings, repository)
     return {
         "generated_at": utc_now.isoformat(timespec="seconds"),
         "local_time": local_now.strftime("%H:%M:%S"),
@@ -259,6 +262,10 @@ def build_status(settings: Settings, repository: JobRepository) -> dict[str, obj
             "channels": _count_config_lines(settings.channels_file),
             "links_pending": _count_pending_links(settings.links_file),
             "scan_interval_minutes": settings.channel_scan_interval_minutes,
+            "fallback_lookback_days": settings.channel_fallback_lookback_days,
+            "ready_clip_count": ready_clips,
+            "ready_buffer_occupancy": buffer_occupancy,
+            "ready_buffer_target": settings.ready_clip_buffer_target,
             "delete_uploaded_clips": settings.delete_uploaded_clips,
         },
     }

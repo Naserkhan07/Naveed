@@ -28,6 +28,9 @@ _ENV_NAMES = [
     "CHANNELS_FILE",
     "CHANNEL_SCAN_MAX_VIDEOS",
     "CHANNEL_SCAN_INTERVAL_MINUTES",
+    "CHANNEL_FALLBACK_LOOKBACK_DAYS",
+    "CHANNEL_MAX_SOURCES_PER_SCAN",
+    "READY_CLIP_BUFFER_TARGET",
     "HOTCLIP_WATCH_DIR",
     "HOTCLIP_EXPORT_DIR",
     "HOTCLIP_MIN_CLIP_AGE_SECONDS",
@@ -80,7 +83,11 @@ def test_reads_valid_local_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert settings.upload_facebook is True
     assert settings.facebook_access_token == "page-token"
     assert settings.hotclip_watch_dir == Path("hotclip-watch")
-    assert settings.channel_scan_max_videos == 5
+    assert settings.channel_scan_max_videos == 50
+    assert settings.channel_scan_interval_minutes == 60
+    assert settings.channel_fallback_lookback_days == 4
+    assert settings.channel_max_sources_per_scan == 5
+    assert settings.ready_clip_buffer_target == 99
     assert settings.schedule_timezone == ""
     assert settings.youtube_uploads_per_slot == 1
     assert settings.scheduled_platforms == ()
@@ -119,7 +126,7 @@ def test_rejects_out_of_range_uploads_per_slot(
         Settings.from_env(env_file=None)
 
 
-def test_quota_warning_when_above_default_quota(
+def test_quota_warning_when_above_default_video_insert_bucket(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _base_env(monkeypatch, tmp_path)
@@ -133,12 +140,13 @@ def test_quota_warning_when_above_default_quota(
         "thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;"
         "sun=08:30,13:30,21:30",
     )
-    monkeypatch.setenv("YOUTUBE_UPLOADS_PER_SLOT", "7")
+    monkeypatch.setenv("YOUTUBE_UPLOADS_PER_SLOT", "34")
     settings = Settings.from_env(env_file=None)
     warnings = settings.quota_warnings()
     assert warnings
     assert "YouTube" in warnings[0]
-    assert "21" in warnings[0]
+    assert "102" in warnings[0]
+    assert "100" in warnings[0]
 
 
 def test_no_quota_warning_at_low_volume(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -146,6 +154,45 @@ def test_no_quota_warning_at_low_volume(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("YOUTUBE_SCHEDULE_TIMES", "09:00")
     settings = Settings.from_env(env_file=None)
     assert settings.quota_warnings() == []
+
+
+def test_no_quota_warning_at_99_daily_inserts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _base_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("UPLOAD_YOUTUBE", "true")
+    monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC123")
+    (tmp_path / "token.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("YOUTUBE_TOKEN_FILE", str(tmp_path / "token.json"))
+    monkeypatch.setenv(
+        "YOUTUBE_SCHEDULE_TIMES",
+        "mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;"
+        "thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;"
+        "sun=08:30,13:30,21:30",
+    )
+    monkeypatch.setenv("YOUTUBE_UPLOADS_PER_SLOT", "33")
+    settings = Settings.from_env(env_file=None)
+    assert settings.quota_warnings() == []
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CHANNEL_FALLBACK_LOOKBACK_DAYS", "0"),
+        ("CHANNEL_MAX_SOURCES_PER_SCAN", "51"),
+        ("READY_CLIP_BUFFER_TARGET", "0"),
+    ],
+)
+def test_rejects_out_of_range_buffer_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    value: str,
+) -> None:
+    _base_env(monkeypatch, tmp_path)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ConfigurationError, match=name):
+        Settings.from_env(env_file=None)
 
 
 def test_requires_rights_acknowledgement(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

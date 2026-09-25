@@ -156,6 +156,12 @@ class JobRepository:
             ).fetchone()
         return row is not None
 
+    def publication_paths(self) -> set[str]:
+        """Return every enrolled clip path with one query for buffer accounting."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT mp4_path FROM publication_clips").fetchall()
+        return {str(row["mp4_path"]) for row in rows}
+
     def add_publication(
         self,
         mp4_path: Path,
