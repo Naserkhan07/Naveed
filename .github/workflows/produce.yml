@@ -1,0 +1,120 @@
+name: Shorts bot — produce
+
+# Downloads/discovers videos, renders captioned Shorts, and runs any
+# schedule-due uploads. Publisher workflows handle the per-platform slots
+# in between; this run also catch-up publishes anything owed by the schedules.
+
+on:
+  schedule:
+    # Every 3 hours (GitHub cron is approximate; expect a few minutes of delay).
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One bot activity at a time across all bot workflows: jobs queue up instead
+# of racing each other on the committed SQLite state.
+concurrency:
+  group: shorts-bot
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      RIGHTS_ACKNOWLEDGED: "true"
+      UPLOAD_YOUTUBE: "true"
+      UPLOAD_INSTAGRAM: "true"
+      UPLOAD_FACEBOOK: "true"
+      YOUTUBE_PRIVACY_STATUS: ${{ vars.YOUTUBE_PRIVACY_STATUS || 'public' }}
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+      FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+      DATABASE_PATH: bot-state/jobs.db
+      WORK_DIR: bot-work
+      ARCHIVE_DIR: bot-work/pending_uploads
+      DOWNLOADED_LINKS_LOG: bot-state/downloaded-links.log
+      LINKS_FILE: links.txt
+      CHANNELS_FILE: channels.txt
+      KEEP_WORK_FILES: "true"
+      DELETE_UPLOADED_CLIPS: "true"
+      OPEN_UPLOAD_LIMIT_FOLDER: "false"
+      SUBTITLES_ENABLED: ${{ vars.SUBTITLES_ENABLED || 'true' }}
+      SCHEDULE_TIMEZONE: ${{ vars.SCHEDULE_TIMEZONE || 'Asia/Kolkata' }}
+      YOUTUBE_SCHEDULE_TIMES: ${{ vars.YOUTUBE_SCHEDULE_TIMES }}
+      INSTAGRAM_SCHEDULE_TIMES: ${{ vars.INSTAGRAM_SCHEDULE_TIMES }}
+      FACEBOOK_SCHEDULE_TIMES: ${{ vars.FACEBOOK_SCHEDULE_TIMES }}
+      CHANNEL_SCAN_MAX_VIDEOS: ${{ vars.CHANNEL_SCAN_MAX_VIDEOS || '5' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project (includes yt-dlp, Deno runtime, PO-token provider)
+        run: python -m pip install -e .
+
+      - name: Verify FFmpeg (preinstalled on ubuntu runners)
+        run: ffmpeg -version | head -1
+
+      - name: Download the Anton caption font (optional, DejaVu fallback is bundled)
+        run: |
+          curl -fsSL -o fonts/Anton-Regular.ttf \
+            https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf \
+            || echo "Anton download failed; bundled DejaVu Sans Bold fallback will be used."
+
+      - name: Restore OAuth/session files from secrets (never committed)
+        run: |
+          mkdir -p bot-state bot-work
+          printf '%s' "${{ secrets.YOUTUBE_CLIENT_SECRET_JSON }}" > client_secret.json
+          printf '%s' "${{ secrets.YOUTUBE_TOKEN_JSON }}" > youtube_token.json
+          if [ -n "${{ secrets.YTDLP_COOKIES }}" ]; then
+            printf '%s' "${{ secrets.YTDLP_COOKIES }}" > youtube-cookies.txt
+            echo "YTDLP_COOKIE_FILE=youtube-cookies.txt" >> "$GITHUB_ENV"
+          fi
+
+      - name: Restore pending rendered clips from the previous run
+        uses: actions/download-artifact@v4
+        with:
+          name: pending-clips
+          path: bot-work/
+        continue-on-error: true
+
+      - name: Run the queue once (links, channels, pending retries, due uploads)
+        run: xvfb-run -a python -m shorts_bot.file_queue --once
+
+      - name: Save pending rendered clips for the publisher runs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pending-clips
+          overwrite: true
+          if-no-files-found: ignore
+          retention-days: 3
+          path: bot-work/
+
+      - name: Commit queue state back to the repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add links.txt channels.txt bot-state/jobs.db bot-state/downloaded-links.log
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            if git commit -m "bot: update queue state (run ${{ github.run_number }})" \
+              && git pull --rebase origin main \
+              && git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "State push failed after retries; next run will reconcile." >&2
+          exit 0
