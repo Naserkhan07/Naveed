@@ -1,682 +1,349 @@
-# Local Groq Shorts + Instagram Reels Automation
+# Shorts Autopilot — HotClip ↔ Scheduler
 
-This project runs entirely on your laptop from VS Code. `main.py` includes a lightweight local Splitzzz storefront, so there is no separate web-server or Docker installation requirement.
+A fully automated Shorts/Reels pipeline with two halves:
 
-Add authorized YouTube links to `links.txt`. The local program downloads each video, removes its link after a successful download, divides the usable timeline into consecutive 20–30 second clips based on the video's duration, generates detailed AI metadata and thumbnails, renders vertical Shorts, and publishes each one to YouTube, Instagram, and Facebook.
+1. **[HotClip](https://github.com/xixihhhh/hotclip)** (external, free, local) is the content
+   factory: it transcribes, finds highlights, reframes to 9:16, removes silences/fillers,
+   normalizes loudness, and burns **word-synced dynamic captions** with exact timing — plus
+   cover JPGs and per-clip post copy.
+2. **This bot** is the discovery + distribution brain: it watches YouTube channels for new
+   uploads, feeds them to HotClip, harvests the finished clips into a SQLite queue, and
+   publishes them to **YouTube, Instagram, and Facebook at your own per-day times** with
+   configurable uploads per slot (2 per YouTube slot, 10 per Instagram/Facebook slot)
+   and a fixed hashtag block appended to every upload.
 
-> **Only process videos you own or have explicit permission/license to download, edit, and republish.** A publicly viewable video is not automatically licensed for reuse. The program requires `RIGHTS_ACKNOWLEDGED=true`.
-
-## What the local workflow does
-
-1. Watches the local `links.txt` file.
-2. Downloads one authorized YouTube video at a time using the Python API equivalent of `yt-dlp -f "bestvideo+bestaudio" URL`, then remuxes those streams without source re-encoding.
-3. Removes every matching URL line immediately after the video downloads successfully.
-4. Records the URL and job ID in `work/downloaded-links.log`.
-5. Extracts speech audio locally with FFmpeg.
-6. Uses Groq `whisper-large-v3-turbo` for timestamped transcription.
-7. In `full_coverage` mode, calculates the clip count from source duration and covers the timeline with consecutive 20–30 second sections.
-8. Generates a detailed YouTube title/description and a separate Instagram caption for every clip.
-9. Renders every section as an H.264/AAC MP4 at the configured native-resolution policy.
-10. When enabled, temporarily hosts selected clips and runs API.market Real-ESRGAN before upload.
-11. Generates a JPEG thumbnail from the final (enhanced or original) clip.
-12. Uploads every result as a public YouTube Short, Instagram Reel, and Facebook Page Reel, using a custom YouTube thumbnail when eligible and a midpoint cover frame on Instagram.
-13. Collects every 50 eligible rendered clips into a verified local Splitzzz ZIP pack.
-
-A downloaded URL is removed before AI/render/upload starts. If a later stage fails, the URL remains in `work/downloaded-links.log`; copy it back into `links.txt` when you want to retry.
-
-## Local files
-
-- `main.py` — easiest way to start the watcher from VS Code
-- `links.txt` — paste one YouTube URL per line
-- `channels.toml` — non-secret YouTube and Instagram account IDs
-- `.env` — local API keys and tokens; never committed
-- `client_secret.json` — Google OAuth desktop client; never committed
-- `youtube_token.json` — generated Google OAuth token; never committed
-- `work/jobs.db` — local job history
-- `work/jobs/<job-id>/short-001.mp4`, `short-002.mp4`, … — rendered Shorts/Reels
-- `work/jobs/<job-id>/thumbnail-001.jpg`, `thumbnail-002.jpg`, … — generated covers
-- `work/downloaded-links.log` — downloaded URL audit history
-- `store-bundles/splitzzz-reels-pack-001-50-reels.zip` — permanent local store packs
-- `website/` — Vercel-ready Splitzzz storefront
-
-## Splitzzz Reel packs and storefront
-
-Every 50 rendered clips that have not appeared in an earlier pack are written to one integrity-checked
-ZIP under `store-bundles/`. MP4 files use stable names from `reel-001.mp4` through
-`reel-050.mp4`; a manifest and SHA-256 sidecar are generated, and local packs are never committed to
-Git. The storefront advertises 50 Reels for ₹300 and a 100-Reel value bundle (two 50-Reel ZIPs) for
-₹500. Set the Vercel project's Root Directory to `website` when deploying.
-
-Local ZIP creation works without cloud credentials. When all four `R2_*` settings are supplied, the
-same verified ZIP is uploaded to a private Cloudflare R2 bucket and recorded in SQLite. The public
-site never receives permanent object URLs: only a server-verified paid Razorpay order can receive a
-15-minute signed download URL. Never place paid ZIPs in `website/public` or the Git repository.
-
-## Do not save account passwords
-
-The program intentionally does not accept YouTube, Google, Facebook, or Instagram passwords.
-
-- YouTube upload uses Google's official OAuth browser authorization.
-- Instagram upload uses a Meta access token for a Professional account.
-- `channels.toml` contains only non-secret IDs.
-- Secret values stay in the gitignored `.env` and OAuth files on your laptop.
-
-## 1. Install local requirements
-
-Install:
-
-- Python 3.11, 3.12, or 3.13 (Python 3.14 is not supported by the Chrome PO-token provider)
-- VS Code
-- VS Code Python extension
-- FFmpeg and ffprobe
-
-The Python installation command also installs the Deno JavaScript runtime and `yt-dlp-ejs` inside
-`.venv`. Current YouTube player challenges require these components for normal format availability;
-no separate global Deno installation is needed.
-
-### Windows FFmpeg
-
-Using Winget:
-
-```powershell
-winget install Gyan.FFmpeg
+```
+channels.txt ──► download new uploads ──► hotclip-watch/  (HotClip 24/7 watch folder)
+                                                     │  (transcribe → cut → 9:16 + captions
+                                                     │   + cover + post copy, all local)
+hotclip-exports/ ──► intake scan ──► SQLite publication queue ──► scheduler
+                                                     │        YT 3 slots × 2 uploads
+                                                     │        IG 2 slots × 10 uploads
+                                                     │        FB 2 slots × 10 uploads
+                                                     └──── catch-up for missed slots
 ```
 
-Restart VS Code after installation and verify:
+> **Rights first:** only queue videos you own or have explicit permission/license to
+> download, edit, and republish. Clipping/reposting other creators' videos without
+> permission violates their rights and platform policies. The bot requires
+> `RIGHTS_ACKNOWLEDGED=true`.
 
-```powershell
-ffmpeg -version
-ffprobe -version
-```
+## What runs automatically
 
-### macOS
+- Every `CHANNEL_SCAN_INTERVAL_MINUTES` (default 60), the newest uploads of every channel in
+  `channels.txt` are discovered via yt-dlp metadata (no YouTube API key).
+- Each new video is downloaded at best quality and dropped straight into HotClip's watch
+  folder; a (channel, video) pair is never delivered twice (SQLite memory).
+- HotClip (desktop app, or its headless `pnpm cli clip`) processes the watch folder 24/7
+  and writes finished clips into its export directory: `mp4` + cover JPG + `.post.txt`
+  + `clips.json` receipt.
+- The watcher picks finished clips from the export directory (never half-written files),
+  reads their copy, and queues them for publishing.
+- At each platform's configured slot times, the scheduler publishes the oldest queued
+  clips — `YOUTUBE_UPLOADS_PER_SLOT` per slot, etc. — with per-clip upload timestamps.
+- A slot that had nothing ready (or failed) keeps its credit: the scheduler **catches up**
+  automatically as soon as clips exist, then returns to the normal cadence.
+- A **status panel** runs at http://localhost:8000 for as long as the watcher does — full
+  live view of discoveries, deliveries, queue, credits, and publishes (see section 6).
 
-```bash
-brew install ffmpeg
-```
+## 1. Install HotClip (the clipper)
 
-### Ubuntu/Debian
+1. Download the desktop app from the
+   [latest release](https://github.com/xixihhhh/hotclip/releases/latest)
+   (Windows installer/portable, macOS, Linux).
+2. On first run, let it fetch its local models (ASR tiers, TransNetV2, etc.).
+3. Open **Settings → Watch folder** and point it at this project's `hotclip-watch/`
+   folder (default name; change with `HOTCLIP_WATCH_DIR`).
+4. Point HotClip's **export/output directory** at this project's `hotclip-exports/`
+   folder (change with `HOTCLIP_EXPORT_DIR`). Enable the caption style you like
+   (e.g. Hormozi / keyword highlight / word pop) in its export scheme.
+5. Leave HotClip running with “clips while you sleep” watch mode on.
 
-```bash
-sudo apt-get update
-sudo apt-get install ffmpeg
-```
+Headless alternative: clone the HotClip repo and drive
+`pnpm cli clip <video> --out hotclip-exports` yourself; the intake works the same.
 
-## 2. Open and install in VS Code
-
-Open the repository folder in VS Code.
-
-### Windows PowerShell
+## 2. Install this bot
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-If PowerShell blocks activation, either select `.venv` through **Python: Select Interpreter**, or temporarily allow the current process:
+macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate`.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.venv\Scripts\Activate.ps1
-```
+Also install FFmpeg (only `ffprobe` is needed now) —
+`winget install Gyan.FFmpeg` / `brew install ffmpeg` / `sudo apt install ffmpeg`.
 
-### macOS/Linux
+## 3. Connect your accounts
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-cp .env.example .env
-```
+### YouTube
 
-In VS Code, select the `.venv` interpreter using **Python: Select Interpreter**.
+1. Google Cloud Console → project → enable **YouTube Data API v3** → OAuth consent screen →
+   create a **Desktop app** OAuth client → save as `client_secret.json`.
+2. Add your channel id to `channels.toml`:
+   ```toml
+   [youtube]
+   channel_id = "UC_YOUR_CHANNEL_ID"
+   ```
+3. Run `python -m shorts_bot.youtube_auth` (or VS Code's *Authorize YouTube* config) and
+   approve in the browser. The token lands in `youtube_token.json`.
+4. `.env`: `UPLOAD_YOUTUBE=true`, `YOUTUBE_PRIVACY_STATUS=public`.
 
-A VS Code task named **Install project dependencies** is also included.
+> **Quota reality check (important):** the default YouTube Data API quota is
+> 10,000 units/day and one upload costs 1,600 units → **~6 uploads per day**. The reference
+> chart volume (21/day) needs a [quota increase request]
+> (https://support.google.com/youtube/contact/yt_api_form). Until approved, extra uploads
+> fail with quota errors and simply catch up on following days; the bot prints this warning
+> at startup.
 
-## 3. Configure Groq locally
+### Instagram + Facebook
 
-Edit `.env`:
+1. Business/Creator Instagram account connected to a Facebook Page, Meta app with content
+   publishing.
+2. Put the numeric Instagram Professional Account ID in `channels.toml` and configure:
+   ```dotenv
+   UPLOAD_INSTAGRAM=true
+   INSTAGRAM_ACCESS_TOKEN=your_long_lived_meta_access_token
+   INSTAGRAM_GRAPH_API_VERSION=v26.0
+   UPLOAD_FACEBOOK=true
+   FACEBOOK_PAGE_ID=your_numeric_page_id
+   FACEBOOK_ACCESS_TOKEN=          # blank = reuse the Instagram token
+   FACEBOOK_GRAPH_API_VERSION=v26.0
+   ```
+3. Generate/refresh the long-lived Page token with:
+   ```powershell
+   python -m shorts_bot.instagram_token --facebook
+   ```
 
-```dotenv
-GROQ_API_KEY=gsk_your_key
-GROQ_MODEL=qwen/qwen3.6-27b
-GROQ_FALLBACK_MODEL=qwen/qwen3.6-27b
-GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo
-GROQ_MAX_TRANSCRIPT_CHARS=8000
-GROQ_METADATA_DELAY_SECONDS=30
-YOUTUBE_DESCRIPTION_TARGET_CHARS=4200
-INSTAGRAM_CAPTION_TARGET_CHARS=2000
-INSTAGRAM_HASHTAGS_FILE=instagram_hashtags.txt
-INSTAGRAM_CAPTION_ROTATION_FILE=instagram_captions.txt
-INSTAGRAM_CAPTION_MENTIONS=@wzz.unfiltered @precious.tulip1
-CLIP_DURATION_SECONDS=30
-SHORTS_SELECTION_MODE=full_coverage
-MAX_SHORTS_PER_VIDEO=0
-VIDEO_LAYOUT=fit_black
-VIDEO_ALLOW_UPSCALE=false
-VIDEO_CRF=18
-VIDEO_PRESET=slow
-RIGHTS_ACKNOWLEDGED=true
-```
+Meta long-lived tokens last ~60 days — re-run the helper when uploads start failing with
+auth errors. Platform ceilings: Instagram ≤100 API posts/day, Facebook Page Reels ≤30/day —
+both fit the 20/day-per-platform chart volume.
 
-`MAX_SHORTS_PER_VIDEO=0` means automatic duration-based counting. A 10-minute source produces 20
-30-second clips. The workflow distributes unusually short remainders where possible; the unavoidable
-platform ceiling is 100 clips per source because both YouTube and Instagram limit automated daily
-publishing. Set a positive value only when you intentionally want a lower cap.
+## 4. Add your channels
 
-The source is downloaded and transcribed once. After that, clips stream through the workflow one at
-a time: generate metadata for clip 1 → render clip 1 → upload clip 1 to both platforms → continue to
-clip 2. It never waits for metadata or rendering of the entire batch before the first upload.
+Edit `channels.txt` (one per line: `@handle`, URL, or channel ID). New uploads are found
+and handed to HotClip automatically. Manual one-offs go in `links.txt` (one URL per line)
+or via `shorts-cli URL...`.
 
-No OpenAI API key or OpenAI service is used. The automatic workflow keeps Groq as its hosted AI
-backend so no model is downloaded to the laptop. Kaggle notebooks are useful for interactive or
-batch GPU experiments, but their sessions are temporary and do not provide a dependable always-on
-API for this unattended local queue; using a tunneled notebook would stop whenever the Kaggle
-session ends.
+## 5. Run
 
-Detailed metadata is generated in a separate paced Groq request for every selected clip. The
-configured 4,200-character YouTube and 2,000-character Instagram values are maximum targets, not
-forced filler lengths. Metadata expands when the transcript contains enough factual information and
-stays shorter when a 30-second clip cannot support more detail. One automatic repair request runs for
-very short responses, but the clip is never blocked merely for being concise. Instagram accepts at
-most 30
-hashtags per caption, so the entire supplied hashtag list cannot appear on every Reel. The full
-editable pool is stored in `instagram_hashtags.txt`; groups of 30 unique tags rotate across the Reel
-batch while every caption remains within the platform limit. Instagram captions alternate globally
-between the non-empty lines in `instagram_captions.txt`. Every new or pending Instagram Reel caption
-starts with the handles in `INSTAGRAM_CAPTION_MENTIONS` (by default,
-`@wzz.unfiltered @precious.tulip1`) without duplicating them during retries.
-
-## 4. Configure local account IDs
-
-Edit `channels.toml`:
-
-```toml
-[youtube]
-channel_id = "UC_YOUR_CHANNEL_ID"
-
-[instagram]
-user_id = "YOUR_NUMERIC_INSTAGRAM_PROFESSIONAL_ACCOUNT_ID"
-```
-
-Do not put passwords or access tokens in this file.
-
-## 5. Authorize YouTube from your laptop
-
-1. Open Google Cloud Console.
-2. Create/select a project and enable **YouTube Data API v3**.
-3. Configure the OAuth consent screen.
-4. Create an OAuth client with application type **Desktop app**.
-5. Download the file and save it in this project as `client_secret.json`.
-6. Run in the VS Code terminal:
-
-```bash
-python -m shorts_bot.youtube_auth
-```
-
-Alternatively, select **Authorize YouTube** in VS Code's Run and Debug menu.
-
-Your browser opens Google's official consent screen. The result is saved locally as `youtube_token.json`. The program verifies that the authorized channel matches `channels.toml` before uploading.
-
-Configure `.env`:
-
-```dotenv
-UPLOAD_YOUTUBE=true
-YOUTUBE_PRIVACY_STATUS=public
-YOUTUBE_CLIENT_SECRETS_FILE=client_secret.json
-YOUTUBE_TOKEN_FILE=youtube_token.json
-```
-
-YouTube may lock uploads from an unaudited Google API project to private even when `public` is requested. The program cannot bypass that platform restriction.
-
-## 6. Configure Instagram locally
-
-Instagram publishing requires a Business or Creator account and a Meta app configured for Instagram content publishing/Facebook Login for Business.
-
-Place the numeric Instagram Professional Account ID in `channels.toml`, and put the access token only in `.env`:
-
-```dotenv
-UPLOAD_INSTAGRAM=true
-INSTAGRAM_ACCESS_TOKEN=your_long_lived_meta_access_token
-INSTAGRAM_GRAPH_API_VERSION=v26.0
-```
-
-The local program:
-
-1. Creates a resumable `REELS` media container.
-2. Uploads the local MP4 to Meta's returned upload URL.
-3. Waits for processing to finish.
-4. Publishes the container.
-5. Retrieves the Reel permalink.
-6. Uses `share_to_feed=true`.
-
-Meta controls final visibility and can reject expired tokens, missing permissions, unsupported accounts, or policy-violating media.
-
-Graph API Explorer initially issues a short-lived User token. To avoid daily expiry failures, generate
-a fresh **User Token** there, then exchange it locally for a long-lived User token and the connected
-Page token. Find the App ID and App Secret under Meta App Dashboard → App settings → Basic, then run:
-
-```powershell
-python -m shorts_bot.instagram_token
-```
-
-The command prompts privately for the App ID, App Secret, and temporary User token, finds the Page
-connected to `splitzz.isodope`, and writes only its long-lived Page token to `.env`. It never stores
-the App Secret or temporary User token.
-
-### Facebook Reels publishing
-
-The bot publishes every rendered clip directly to your Facebook Page as a public Reel. Facebook
-publishing is enabled by default (`UPLOAD_FACEBOOK=true`), so the bot uploads to Facebook
-automatically every time it runs. It needs your numeric `FACEBOOK_PAGE_ID` (in `.env` or
-`channels.toml`) and a long-lived Page token with `pages_manage_posts`; leave
-`FACEBOOK_ACCESS_TOKEN` blank to reuse `INSTAGRAM_ACCESS_TOKEN`. To set everything up in one step,
-run:
-
-```powershell
-python -m shorts_bot.instagram_token --facebook
-```
-
-The helper validates those permissions and confirms that Meta returns a `CREATE_CONTENT`/Content
-Page task before automatically saving `FACEBOOK_PAGE_ID`, `FACEBOOK_ACCESS_TOKEN`,
-`FACEBOOK_GRAPH_API_VERSION`, and `UPLOAD_FACEBOOK=true` in `.env`.
-Facebook publishing initializes a Reel session, uploads the local MP4 to `rupload.facebook.com`,
-publishes it publicly, waits for processing, and stores the Reel ID and URL. Meta limits API-published
-Page Reels to 30 in a rolling 24-hour period; excess clips remain pending for automatic retry.
-
-## 7. Optional API.market Real-ESRGAN enhancement
-
-API.market requires `video_path` to be a direct public HTTPS URL; it cannot read a Windows file path.
-The workflow therefore uploads each selected local clip temporarily to Cloudinary, submits that URL
-to API.market, polls the asynchronous prediction, downloads the enhanced MP4, deletes the temporary
-Cloudinary input, generates the thumbnail from the enhanced result, and only then uploads to YouTube,
-Instagram, and Facebook.
-
-Any key visible in a screenshot or chat is compromised. Revoke it and put only the replacement in
-the gitignored `.env` file. Create a Cloudinary account and configure:
-
-```dotenv
-VIDEO_ENHANCER=api_market
-APIMARKET_API_KEY=YOUR_NEW_ROTATED_KEY
-APIMARKET_MODEL=RealESRGAN_x4plus
-APIMARKET_RESOLUTION=FHD
-APIMARKET_MAX_CLIPS=5
-APIMARKET_TIMEOUT_SECONDS=1200
-
-CLOUDINARY_CLOUD_NAME=YOUR_CLOUD_NAME
-CLOUDINARY_API_KEY=YOUR_CLOUDINARY_API_KEY
-CLOUDINARY_API_SECRET=YOUR_CLOUDINARY_API_SECRET
-```
-
-`APIMARKET_MAX_CLIPS=5` enhances only clips 1–5 as selected for the initial trial. Set it to `0` only
-when the account has enough paid units to enhance every clip. Each enhanced clip consumes a separate
-prediction. The temporary hosting object is deleted in cleanup even when enhancement fails.
-
-## 8. Add YouTube links
-
-Open `links.txt` in VS Code and add one URL per line:
-
-```text
-https://www.youtube.com/watch?v=VIDEO_ONE
-https://youtu.be/VIDEO_TWO
-https://youtube.com/shorts/VIDEO_THREE
-```
-
-Save the file. Blank lines and comments beginning with `#` are preserved.
-
-## 9. Start locally from VS Code
-
-### Easiest method
-
-Open **Run and Debug**, select **Run local Shorts automation**, and press **F5**.
-
-### VS Code terminal — bot and website together
+Everything (discovery, delivery, intake, scheduled publishing):
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-That single command starts the queue bot, serves the Splitzzz storefront locally, and opens it in the
-default browser. The terminal prints:
+The watcher checks for new links/clips every 30 seconds and re-scans channels hourly.
 
-```text
-Splitzzz website started: http://localhost:8080
-Local watcher started. Add YouTube URLs to links.txt. Press Ctrl+C to stop.
-```
-
-`Ctrl+C` stops both services cleanly. If port 8080 is occupied, the launcher tries the next available
-port through 8089 and prints the selected address. The local static preview does not emulate Vercel's
-Razorpay/R2 serverless APIs; secure checkout remains available only on the deployed Vercel site.
-The watcher checks `links.txt` every 30 seconds and processes jobs sequentially.
-
-### Process the current file once
-
-```bash
-python -m shorts_bot.file_queue --once
-```
-
-Or select **Process links.txt once** in VS Code's Run and Debug menu.
-
-If a downloaded job later fails during AI, rendering, or upload, retry it without downloading again:
+Single passes and utilities:
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --resume JOB_ID
+python -m shorts_bot.file_queue --once             # one full cycle, then exit
+python -m shorts_bot.file_queue --scan-channels    # only deliver new channel uploads
+python -m shorts_bot.file_queue --publish youtube  # publish what YouTube is owed now
+python -m shorts_bot.status_panel                  # dashboard only (read-only view)
+python -m shorts_bot.youtube_auth                  # (re)connect YouTube
+python -m shorts_bot.instagram_token --facebook    # (re)create Meta long-lived token
+python -m pytest -q                                # tests
+python -m ruff check .                             # lint
 ```
 
-A job created before multi-clip support keeps its already-published single Short when resumed. To
-reuse its downloaded source and create a new multi-clip batch, run:
+For exact-to-the-minute publishing on a desktop, keep the watcher running — its 30-second
+tick publishes within ~30s of each slot. Windows Task Scheduler/macOS cron can instead call
+`--publish <platform>` at each slot.
 
-```bash
-python -m shorts_bot.file_queue --expand JOB_ID
-```
+## 6. Status panel — http://localhost:8000
 
-## Automatic credential checks, retries, and pending folders
+The watcher always serves a live localhost dashboard (no setup, no extra install). While
+`main.py` runs, open **http://localhost:8000** in any browser and it auto-refreshes every
+5 seconds. Running fully on GitHub instead? The same dashboard is published online — see
+section 9.
 
-At startup and every `CREDENTIAL_CHECK_MINUTES`, the watcher reloads `.env`, verifies Groq models,
-refreshes YouTube OAuth when needed, checks the authorized YouTube channel and Instagram Page token,
-and validates Cloudinary when enhancement is enabled. Retired Groq models automatically migrate to
-an active non-OpenAI Qwen model.
+- **RUNNING / STALE badge** — driven by the watcher's database heartbeat; if the bot ever
+  stops ticking the badge turns red, plus "last tick … ago" and uptime.
+- **Per-platform cards** — uploads done today vs. what the schedule owes right now, slot
+  chips (done / partial / due / upcoming), credits due right now, queue depth, total
+  published, last upload time, next slot, and the per-slot pace.
+- **Activity feed** — every discovery, HotClip delivery, queued clip, publish (with the
+  live post link), upload limit, and error: *what happened, when, and where*.
+- **Publication queue** — every clip with a ✓ (linked) or … pending cell per platform.
+- **Footer** — HotClip folders, hashtag count, channels, links pending, scan interval.
 
-A startup authentication failure or an official publishing limit blocks only that destination while
-other platforms, metadata, enhancement, rendering, and thumbnails continue. An individual YouTube
-or Instagram clip upload failure no longer skips the rest of that platform's batch: the failed clip
-remains pending and the bot immediately attempts the next generated clip. Instagram binary uploads
-automatically retry temporary HTTP 408/5xx responses with exponential backoff before leaving that
-clip pending. At the end, the workflow creates one ordinary folder under
-`work/pending_uploads/` containing:
+The address is printed when the watcher starts (`[panel] live status dashboard: …`). If
+port 8000 is busy the next free port is used automatically. Configure or disable via
+`STATUS_PANEL_PORT`, `STATUS_PANEL_HOST`, `STATUS_PANEL_ENABLED=false`.
+A standalone read-only view against the same database also works without the watcher:
+`python -m shorts_bot.status_panel` (it then honestly shows STALE until the watcher runs).
 
-- `videos/` with every generated MP4
-- `thumbnails/` with every cover image
-- `metadata.json` with titles, descriptions, captions, IDs, URLs, and pending status
-- `upload-manifest.csv` for manual upload tracking
-- a short README
+> GitHub Actions runs are ephemeral, so the panel applies to local/always-on runs; in the
+> cloud use the Actions run log and the persisted queue instead.
 
-Configure:
+## 7. Scheduling model
 
 ```dotenv
-ARCHIVE_ON_UPLOAD_LIMIT=true
-ARCHIVE_DIR=work/pending_uploads
-OPEN_UPLOAD_LIMIT_FOLDER=true
-CREDENTIAL_CHECK_MINUTES=60
-PENDING_RETRY_JOBS_PER_CYCLE=3
+SCHEDULE_TIMEZONE=Asia/Kolkata
+YOUTUBE_SCHEDULE_TIMES=mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30
+YOUTUBE_UPLOADS_PER_SLOT=2
+INSTAGRAM_SCHEDULE_TIMES=mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30
+INSTAGRAM_UPLOADS_PER_SLOT=10
+FACEBOOK_SCHEDULE_TIMES=mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00
+FACEBOOK_UPLOADS_PER_SLOT=10
 ```
 
-On Windows, Explorer opens the completed folder automatically. No ZIP extraction is needed. The
-watcher always processes new URLs from `links.txt` before old pending uploads. When the URL queue is
-idle, it reloads changed credentials and retries a bounded number of pending jobs each cycle; clips
-already uploaded to a destination are skipped. A pending-count report explains exactly how many
-YouTube and Instagram uploads remain.
+- Grammar: plain `08:00,20:30` = every day; `mon=08:00;fri=08:00,21:30` = per weekday
+  (unlisted weekdays get nothing; don't mix both forms). 24-hour local times.
+- Each **passed** slot owes `*_UPLOADS_PER_SLOT` uploads of the oldest queued clips.
+- Upload timestamps in `work/jobs.db` track what each platform already got today — so after
+  a restart or overnight catch-up, credits stay exact (a missed slot publishes double later,
+  not zero).
+- Shipped defaults mirror your reference charts (slot time = middle of each suggested
+  window): YouTube 3 slots/day × **2 uploads** (= 6/day, matching the default YouTube API
+  quota of ~6 uploads/day), Instagram 2 slots/day × 10, Facebook 2 slots/day × 10.
+- If the queue runs dry, nothing is posted until HotClip produces more clips.
 
-### Personal messaging accounts are not used for storage
+A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake instead.
 
-The workflow intentionally does not automate personal Instagram DMs or personal WhatsApp Web. A
-phone number alone cannot authorize official WhatsApp automation; official sending requires a
-WhatsApp Business Cloud API account, Phone Number ID, access token, and recipient opt-in. Pending
-videos therefore remain in the ordinary local folder above. If the project is inside a OneDrive
-Documents directory, that folder can also sync to the OneDrive mobile app.
+## 8. Hashtags on every video
 
-## One-off URL command
+Every upload gets the ordered block from [`hashtags.txt`](hashtags.txt) appended
+automatically — from the first tag down, as many as the platform accepts:
 
-To process URLs without editing `links.txt`:
+| Platform | Where they land | How many |
+|---|---|---|
+| YouTube | end of the description | up to **59** (+ the `#Shorts` the uploader adds itself = YouTube's 60 cap — beyond 60 YouTube ignores *every* hashtag) |
+| Instagram | end of the caption | up to **30** (Instagram rejects captions with more) |
+| Facebook | end of the Reel description | **the whole list** (no platform cap) |
 
-```bash
-shorts-cli --platform both "https://youtu.be/VIDEO_ID"
-```
+- 207 tags ship in the box: 14 global reach tags, then every country A–Z.
+- Tags already present in a clip's HotClip copy are never duplicated, and the
+  existing copy always stays above the block ("from top till bottom").
+- Character limits trim only trailing tags; at least the first tag always ships.
+- Edit the file freely: only `#tokens` are read, everything else is a comment
+  (never write `#example` words in header lines — they'd become live tags).
+- Controls: `HASHTAGS_ENABLED` (default true), `HASHTAGS_FILE`,
+  `HASHTAGS_YOUTUBE_MAX`/`HASHTAGS_INSTAGRAM_MAX`/`HASHTAGS_FACEBOOK_MAX`
+  (0 = unlimited; values above a platform's real cap are rejected on startup).
 
-Platform overrides:
+## 9. Run everything on GitHub — no local PC needed
 
-```bash
-shorts-cli --platform youtube "https://youtu.be/VIDEO_ID"
-shorts-cli --platform instagram "https://youtu.be/VIDEO_ID"
-shorts-cli --platform none "https://youtu.be/VIDEO_ID"
-```
+The autopilot lives entirely on GitHub: **nothing runs on your computer, ever**, and it
+never stops. It wakes on its own every 15 minutes (plus on every push to `main` and
+whenever you press "Run workflow"), does harvest → HotClip cloud clipping → scheduled
+publishing, and goes back to sleep until the next tick. State (queue DB, watch folder,
+exports, HotClip itself) persists between runs via GitHub caches, and a tiny monthly
+keepalive commit on the `autopilot-keepalive` branch stops GitHub from disabling
+scheduled runs after 60 days of repo inactivity.
 
-`--platform none` creates the MP4 locally without uploading it.
+> Honest mechanics: GitHub schedulers are interval-based, not a literal 24/7 process,
+> and cron can run late. That's harmless here — the credit system publishes what is
+> owed whenever a run happens — so "always running" in practice means "it fires all
+> day, every day, forever, and catches up exactly".
+
+### Your dashboard is always online — no localhost needed
+
+Every run rebuilds the same status panel as a **public GitHub Pages site**:
+open **https://Naserkhan07.github.io/Naveed/** from anywhere (phone included) and you
+get the identical dashboard — RUNNING/STALE badge, per-platform progress, the "what,
+when, where" activity feed with links, and the queue — refreshed automatically after
+every run (the header shows "data from … ago"). The page is static and public like the
+repo: it never contains tokens or secrets, only clip titles, progress, and post links.
+
+### One-time setup (~3 minutes, all in the GitHub web UI)
+
+1. **Merge the PR** so `main` has the code.
+2. **Add the workflow file**: repo → **Add file → Upload files** → upload
+   `.github/workflows/autopilot.yml` onto `main` (the Arena GitHub App token isn't
+   allowed to push workflow files; GitHub schedules also only run from the default
+   branch — both solved by this one upload).
+3. **Settings → Pages** → "Build and deployment" → Source: **GitHub Actions**.
+4. **Settings → Secrets and variables → Actions** → add:
+   `YOUTUBE_TOKEN_JSON` (contents of your local `youtube_token.json`),
+   `INSTAGRAM_USER_ID`, `INSTAGRAM_ACCESS_TOKEN`, `FACEBOOK_PAGE_ID`,
+   `FACEBOOK_ACCESS_TOKEN` (optional `YTDLP_COOKIES_TXT` — runners are datacenter IPs
+   and YouTube may ask "confirm you're not a bot" without cookies).
+5. **Actions tab → Autopilot → Run workflow** once. The dashboard goes live at the
+   Pages URL on that first run; every 15-minute tick keeps everything moving.
+
+Schedules, timezone, and per-slot volumes live in the workflow's `env:` block (edit
+them like `.env`); `HOTCLIP_CLOUD: "true"` enables experimental cloud clipping via
+HotClip's headless CLI (AGPL source cloned at runtime, never vendored here — failures
+never block publishing the backlog). Meta long-lived tokens still expire ~60 days:
+refresh them like before.
+
+The local watcher path (sections 5–7) stays fully supported for anyone who prefers
+an always-on PC; the localhost panel and the Pages dashboard are the same page.
 
 ## Configuration reference
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `GROQ_API_KEY` | empty | Required Groq API key |
-| `GROQ_MODEL` | `qwen/qwen3.6-27b` | Active non-OpenAI Groq highlight/metadata model |
-| `GROQ_FALLBACK_MODEL` | `qwen/qwen3.6-27b` | Non-OpenAI Groq fallback model |
-| `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Timestamped transcription |
-| `GROQ_MAX_TRANSCRIPT_CHARS` | `8000` | Sampled planning transcript budget |
-| `GROQ_METADATA_DELAY_SECONDS` | `30` | Pacing between detailed per-clip metadata calls |
-| `YOUTUBE_DESCRIPTION_TARGET_CHARS` | `4200` | Target detailed description length, max 4500 |
-| `INSTAGRAM_CAPTION_TARGET_CHARS` | `2000` | Caption limit including mentions and hashtags, max 2000 |
-| `INSTAGRAM_HASHTAGS_FILE` | `instagram_hashtags.txt` | Editable pool rotated in groups of 30 |
-| `INSTAGRAM_CAPTION_ROTATION_FILE` | `instagram_captions.txt` | Exact Instagram caption bodies alternated globally Reel by Reel |
-| `INSTAGRAM_CAPTION_MENTIONS` | `@wzz.unfiltered @precious.tulip1` | Handles placed at the start of every pending/new Reel caption |
-| `YTDLP_COOKIES_FROM_BROWSER` | empty | Direct browser extraction (Firefox recommended on Windows) |
-| `YTDLP_BROWSER_PROFILE` | empty | Optional browser profile name/path |
-| `YTDLP_COOKIE_FILE` | empty | Netscape cookie export for Chrome DPAPI workaround |
-| `CHANNEL_CONFIG_FILE` | `channels.toml` | Local non-secret account IDs |
+| `HOTCLIP_WATCH_DIR` | `hotclip-watch` | Folder HotClip watches for new source videos |
+| `HOTCLIP_EXPORT_DIR` | `hotclip-exports` | Folder HotClip writes finished clips to |
+| `HOTCLIP_MIN_CLIP_AGE_SECONDS` | `90` | Min file age before a clip counts as finished |
+| `CHANNELS_FILE` | `channels.txt` | Channel list for automatic discovery |
+| `CHANNEL_SCAN_MAX_VIDEOS` | `5` | Newest uploads inspected per channel per scan (1–50) |
+| `CHANNEL_SCAN_INTERVAL_MINUTES` | `60` | How often channels are re-scanned (5–1440) |
+| `LINKS_FILE` | `links.txt` | Manual URL queue (processed first) |
+| `LINKS_POLL_SECONDS` | `30` | Watcher tick (5–3600) |
+| `WORK_DIR` / `DATABASE_PATH` | `work` / `work/jobs.db` | Staging and the SQLite queue |
+| `SCHEDULE_TIMEZONE` | system local | IANA timezone for all schedule times |
+| `*_SCHEDULE_TIMES` | empty | Per-platform slot times (daily or `day=` grammar) |
+| `*_UPLOADS_PER_SLOT` | `1` | Uploads per slot per platform (1–50) |
+| `YTDLP_COOKIES_FROM_BROWSER` | empty | Browser to read YouTube cookies from |
+| `YTDLP_COOKIE_FILE` | empty | Netscape cookie file (Chrome DPAPI workaround) |
 | `UPLOAD_YOUTUBE` | `false` | Enable YouTube publishing |
 | `YOUTUBE_PRIVACY_STATUS` | `public` | Requested YouTube visibility |
 | `YOUTUBE_TOKEN_FILE` | `youtube_token.json` | Local OAuth token |
+| `CHANNEL_CONFIG_FILE` | `channels.toml` | Non-secret account IDs |
 | `UPLOAD_INSTAGRAM` | `false` | Enable Instagram publishing |
-| `INSTAGRAM_ACCESS_TOKEN` | empty | Secret local Meta Page token |
+| `INSTAGRAM_ACCESS_TOKEN` | empty | Long-lived Meta Page token |
 | `INSTAGRAM_GRAPH_API_VERSION` | `v26.0` | Meta Graph API version |
-| `UPLOAD_FACEBOOK` | `true` | Publish public Facebook Page Reels automatically |
-| `FACEBOOK_PAGE_ID` | empty | Numeric Facebook Page ID; can be stored in `channels.toml` |
+| `UPLOAD_FACEBOOK` | `true` | Enable Facebook Page Reels publishing |
+| `FACEBOOK_PAGE_ID` | empty | Numeric Page ID (or in `channels.toml`) |
 | `FACEBOOK_ACCESS_TOKEN` | Instagram token | Long-lived Page token with `pages_manage_posts` |
-| `FACEBOOK_GRAPH_API_VERSION` | `v26.0` | Facebook Reels API version |
-| `STORE_BUNDLES_ENABLED` | `true` | Create verified local Splitzzz Reel ZIP packs |
-| `STORE_BUNDLE_SIZE` | `50` | Number of MP4 Reels in every local ZIP pack |
-| `STORE_BUNDLE_DIR` | `store-bundles` | Permanent local copies of store ZIP packs |
-| `R2_ACCOUNT_ID` | empty | Cloudflare account identifier for optional private website uploads |
-| `R2_ACCESS_KEY_ID` | empty | Secret local R2 API credential; never commit it |
-| `R2_SECRET_ACCESS_KEY` | empty | Secret local R2 API credential; never commit it |
-| `R2_BUCKET_NAME` | empty | Private bucket holding paid ZIP products |
-| `LINKS_FILE` | `links.txt` | Local URL queue |
-| `DOWNLOADED_LINKS_LOG` | `work/downloaded-links.log` | Download audit log |
-| `LINKS_POLL_SECONDS` | `30` | Queue interval, 5–3600 seconds |
-| `CREDENTIAL_CHECK_MINUTES` | `60` | Reload `.env`, check services, and retry pending jobs |
-| `PENDING_RETRY_JOBS_PER_CYCLE` | `3` | Maximum old pending jobs retried per check |
-| `CLIP_DURATION_SECONDS` | `30` | Preferred duration, 20–30 |
-| `SHORTS_SELECTION_MODE` | `full_coverage` | `full_coverage` or `ai_highlights` |
-| `MAX_SHORTS_PER_VIDEO` | `0` | `0` = duration-based automatic count; 1–100 = optional cap |
-| `VIDEO_LAYOUT` | `fit_black` | Full source with black space; optional `center_crop` or `blurred_background` |
-| `VIDEO_ALLOW_UPSCALE` | `false` | Do not enlarge the source inside the vertical canvas |
-| `VIDEO_CRF` | `18` | x264 quality; lower is higher quality/larger |
-| `VIDEO_PRESET` | `slow` | x264 compression preset |
-| `VIDEO_ENHANCER` | `none` | Set `api_market` to enable remote Real-ESRGAN |
-| `APIMARKET_API_KEY` | empty | Rotated private API.market key |
-| `APIMARKET_MODEL` | `RealESRGAN_x4plus` | Remote enhancement model |
-| `APIMARKET_RESOLUTION` | `FHD` | Requested output resolution |
-| `APIMARKET_MAX_CLIPS` | `5` | First N clips enhanced; `0` means all |
-| `CLOUDINARY_CLOUD_NAME` | empty | Temporary input hosting account |
-| `CLOUDINARY_API_KEY` | empty | Temporary input hosting key |
-| `CLOUDINARY_API_SECRET` | empty | Temporary input hosting secret |
-| `ARCHIVE_ON_UPLOAD_LIMIT` | `true` | Build a normal folder whenever platform uploads remain pending |
-| `ARCHIVE_DIR` | `work/pending_uploads` | Local pending-video folder destination |
-| `OPEN_UPLOAD_LIMIT_FOLDER` | `true` | Open the completed folder in Windows Explorer |
-| `WORK_DIR` | `work` | Local media directory |
-| `DATABASE_PATH` | `work/jobs.db` | Local SQLite history |
-| `KEEP_WORK_FILES` | `true` | Keep the job folder (source video) after publishing |
-| `DELETE_UPLOADED_CLIPS` | `true` | Delete each clip MP4/thumbnail once it is published on every platform and bundled |
-| `START_LOCAL_WEBSITE` | `true` | Start the storefront together with `main.py` |
-| `LOCAL_WEBSITE_HOST` | `127.0.0.1` | Keep the local preview accessible only from this computer |
-| `LOCAL_WEBSITE_PORT` | `8080` | Preferred local storefront port; launcher can fall forward to 8089 |
-| `LOCAL_WEBSITE_AUTO_OPEN` | `true` | Open the storefront automatically in the default browser |
-| `LOCAL_WEBSITE_DIRECTORY` | `website/public` | Static storefront files served by the one-command launcher |
+| `FACEBOOK_LIMIT_COOLDOWN_HOURS` | `24` | Pause after a Meta spam-protection block |
+| `YOUTUBE_DESCRIPTION_TARGET_CHARS` | `4200` | Max YouTube description length |
+| `INSTAGRAM_CAPTION_TARGET_CHARS` | `2000` | Max Instagram caption length |
+| `DELETE_UPLOADED_CLIPS` | `false` | Delete clip MP4 once published everywhere |
+| `HASHTAGS_ENABLED` | `true` | Append the required hashtag block to every upload |
+| `HASHTAGS_FILE` | `hashtags.txt` | Ordered hashtag list (only `#tokens` are read) |
+| `HASHTAGS_YOUTUBE_MAX` | `59` | YouTube hashtag budget (+1 uploader `#Shorts` = 60 cap) |
+| `HASHTAGS_INSTAGRAM_MAX` | `30` | Instagram's hard caption hashtag cap |
+| `HASHTAGS_FACEBOOK_MAX` | `0` | 0 = unlimited; Facebook gets the full list |
+| `STATUS_PANEL_ENABLED` | `true` | Serve the live localhost dashboard with the watcher |
+| `STATUS_PANEL_HOST` | `127.0.0.1` | Dashboard bind address |
+| `STATUS_PANEL_PORT` | `8000` | Dashboard port (auto-increments if busy) |
+| `STATUS_STALE_AFTER_SECONDS` | `120` | Heartbeat age before the badge shows STALE |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
-## Test locally
+## Project layout
 
-```bash
-python -m pytest -q
-python -m ruff check .
-```
-
-A VS Code **Run tests** task is included.
+- `main.py` — one-command launcher (watcher)
+- `shorts_bot/file_queue.py` — discovery, HotClip delivery, intake, the watcher loop
+- `shorts_bot/hotclip.py` — export-dir scanner (mp4 + cover + `.post.txt` + `clips.json`)
+- `shorts_bot/publisher.py` — FIFO publishing with per-slot credits and Meta cooldowns
+- `shorts_bot/hashtags.py` — per-platform hashtag block (caps, dedupe, char budgets)
+- `shorts_bot/status_panel.py` + `status_page.html` — the localhost dashboard
+  (heartbeat badge, per-platform cards, activity feed, queue; `python -m shorts_bot.status_panel`)
+- `shorts_bot/pages_export.py` — exports the same dashboard statically for GitHub Pages
+- `shorts_bot/scheduler.py` — per-weekday schedule grammar and credit math
+- `shorts_bot/channels.py` — channel list parsing + yt-dlp latest-uploads discovery
+- `shorts_bot/downloader.py` — yt-dlp source downloads (best quality, retries, cookies)
+- `shorts_bot/youtube.py` / `instagram.py` / `facebook.py` — official-API uploaders
+- `shorts_bot/db.py` — SQLite: channel memory + publication queue
 
 ## Troubleshooting
 
-### Groq daily token limit reached
-
-Groq retired `llama-3.1-8b-instant` and `llama-3.3-70b-versatile` on August 16, 2026.
-The project now uses Groq-hosted Qwen, which needs only the existing Groq API key and no OpenAI
-account or API key. Old Llama values in `.env` are migrated automatically at startup. Long
-transcripts are still compacted into contiguous candidate blocks before planning. Use:
-
-```dotenv
-GROQ_MODEL=qwen/qwen3.6-27b
-GROQ_FALLBACK_MODEL=qwen/qwen3.6-27b
-GROQ_MAX_TRANSCRIPT_CHARS=8000
-```
-
-A URL is removed after download by design. If AI planning then fails, reuse the local source without
-redownloading it:
-
-```powershell
-python -m shorts_bot.file_queue --resume JOB_ID
-```
-
-Use the job ID printed in brackets in the failure output. If the 8B model's limit is also exhausted,
-wait until Groq's reported reset time or upgrade the Groq service tier.
-
-### YouTube says "Sign in to confirm you're not a bot"
-
-Sign in to YouTube in a supported browser. Firefox cookies can usually be read directly. Modern
-Chrome on Windows may return `Failed to decrypt with DPAPI` because application-bound encryption
-prevents `yt-dlp` from decrypting the browser database, even under the same Windows account.
-
-For Firefox direct extraction:
-
-```dotenv
-YTDLP_COOKIES_FROM_BROWSER=firefox
-YTDLP_BROWSER_PROFILE=
-YTDLP_COOKIE_FILE=
-```
-
-To keep using Chrome, export only your YouTube session to a Netscape-format cookie file using the
-procedure in yt-dlp's official cookie-exporting guide, save it locally as `youtube-cookies.txt`, then
-configure:
-
-```dotenv
-YTDLP_COOKIES_FROM_BROWSER=
-YTDLP_BROWSER_PROFILE=
-YTDLP_COOKIE_FILE=youtube-cookies.txt
-```
-
-The cookie file takes precedence and avoids Chrome DPAPI extraction. It is ignored by Git, but it is
-still equivalent to account access: never share, upload, screenshot, or commit it. Delete it and sign
-out of the exported browser session when it is no longer needed. Retry with:
-
-```powershell
-python -m shorts_bot.file_queue --once
-```
-
-### YouTube says "Requested format is not available"
-
-Current YouTube downloads require an external JavaScript runtime, matching EJS challenge scripts,
-and sometimes a YouTube Proof-of-Origin token. Pull the latest update and reinstall the project; it
-requires a current `yt-dlp`, Deno, `yt-dlp-ejs>=0.8`, curl-cffi, and the WebPoClient token provider.
-The provider opens an automated temporary Chrome window only when YouTube requests a PO token; do not
-close that window while the download is starting. Its current browser dependency does not load under
-Python 3.14, so create `.venv` with Python 3.11–3.13. The downloader always keeps the exact
-`bestvideo+bestaudio` selector. If exported account cookies expose only SABR/image formats for a
-public video, it retries that same selector without cookies. If the default public URL then returns
-HTTP 403, it forces PO-token-capable mweb/web_safari clients while preserving the same quality.
-
-```powershell
-winget install --exact --id Python.Python.3.13
-git pull origin arena/01a00af0-soul-exter
-deactivate 2>$null
-Remove-Item -Recurse -Force .venv
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-python -m yt_dlp --version
-deno --version
-python -m shorts_bot.file_queue --once
-```
-
-### YouTube download connection reset on Windows
-
-Update the downloader and retry the same URL:
-
-```powershell
-python -m pip install --upgrade yt-dlp
-python -m shorts_bot.file_queue --once
-```
-
-The workflow resumes partial downloads, forces IPv4, downloads conservatively, and retries temporary
-HTTP/CDN failures with exponential backoff. A failed download does not remove its URL from
-`links.txt`. If all retries still fail, temporarily disable any VPN/proxy, allow Python through the
-firewall or antivirus web shield, or try another network such as a mobile hotspot.
-
-### Uploaded video looks blurry
-
-First wait for YouTube and Instagram to finish HD processing; immediately after upload they may only
-serve a low-resolution rendition. The default renderer now shows the complete source without zooming
-or cropping. It centers the source inside a 1080×1920 canvas and fills unused space with solid black.
-It preserves the source frame rate and encodes H.264 at CRF 18 with the slow preset. Confirm `.env`
-contains:
-
-```dotenv
-VIDEO_LAYOUT=fit_black
-VIDEO_ALLOW_UPSCALE=false
-VIDEO_CRF=18
-VIDEO_PRESET=slow
-```
-
-The downloader keeps yt-dlp's highest available source streams. FFmpeg still cuts and re-encodes each
-Short, but `fit_black` preserves the full composition and `VIDEO_ALLOW_UPSCALE=false` prevents a
-low-resolution source from being enlarged. This is the only non-distorted way to show an entire
-landscape frame inside a vertical phone canvas without the zoomed-in center crop.
-Existing rendered/uploaded files are not changed by a configuration update. To reuse the downloaded
-source, re-render all tracked clips with current settings, and upload new copies, run:
-
-```powershell
-python -m shorts_bot.file_queue --rebuild JOB_ID
-```
-
-The old platform posts remain online and must be deleted manually after checking the replacements.
-`--rebuild` now removes every stale `short-*.mp4` and thumbnail before starting, resets metadata so
-long descriptions/captions are regenerated, and validates any existing MP4 before reuse. This avoids
-`moov atom not found` failures caused by interrupted partial files.
-
-### FFmpeg not found
-
-Install FFmpeg, restart VS Code, and verify `ffmpeg -version` in the integrated terminal.
-
-### YouTube token missing or wrong channel
-
-Run:
-
-```bash
-python -m shorts_bot.youtube_auth
-```
-
-If the token was created for another channel, delete `youtube_token.json` and authorize again with the correct Google account.
-
-### Instagram upload fails
-
-Confirm that:
-
-- The account is Business or Creator, not a personal account.
-- The Meta app has content-publishing permission.
-- The token has not expired.
-- `channels.toml` contains the numeric `instagram_business_account.id`, not the username or
-  Business Portfolio name. Retrieve it with:
-  `/me/accounts?fields=id,name,instagram_business_account{id,username},access_token`.
-
-### A URL disappeared but a later stage failed
-
-That means the download succeeded. Fix the reported AI, rendering, token, or upload issue and resume
-using the job ID printed in the terminal:
-
-```powershell
-python -m shorts_bot.file_queue --resume JOB_ID
-```
-
-Completed clips and platform uploads are recorded individually, so a resume skips successful clips
-and does not repost them. Instagram's official Content Publishing API permits at most 100
-API-published posts per rolling 24 hours. YouTube custom thumbnail eligibility varies by channel;
-if `thumbnails.set` is refused, the video remains published and YouTube uses its generated frame.
+- **"Sign in to confirm you're not a bot" (YouTube download):** export Netscape cookies to
+  `youtube-cookies.txt` and set `YTDLP_COOKIE_FILE=youtube-cookies.txt`, or use
+  `YTDLP_COOKIES_FROM_BROWSER=firefox`.
+- **YouTube `quotaExceeded`:** expected beyond ~6 uploads/day on the default quota; clips
+  stay queued and publish on later days. Request a quota increase for 21/day.
+- **Instagram/Facebook token expired:** re-run `python -m shorts_bot.instagram_token
+  --facebook`; Meta long-lived tokens last ~60 days.
+- **Clips are discovered but never publish:** check pending counts in the watcher log,
+  confirm `UPLOAD_*` flags, schedule grammar, and that `SCHEDULE_TIMEZONE` matches intent.
+- **A clip was skipped as "file missing":** its MP4 was moved/deleted outside the bot; the
+  queue entry keeps retrying whenever the file returns, or delete the row in `work/jobs.db`.

@@ -5,18 +5,42 @@ from enum import StrEnum
 from pathlib import Path
 
 
-class JobStatus(StrEnum):
-    QUEUED = "queued"
-    DOWNLOADING = "downloading"
-    ANALYZING = "analyzing"
-    RENDERING = "rendering"
-    UPLOADING = "uploading"
-    COMPLETE = "complete"
-    FAILED = "failed"
+class ChannelPlatform(StrEnum):
+    YOUTUBE = "YouTube"
+    INSTAGRAM = "Instagram"
+    FACEBOOK = "Facebook"
 
-    @property
-    def terminal(self) -> bool:
-        return self in {self.COMPLETE, self.FAILED}
+
+_platform_id_columns: dict[ChannelPlatform, str] = {
+    ChannelPlatform.YOUTUBE: "youtube_video_id",
+    ChannelPlatform.INSTAGRAM: "instagram_media_id",
+    ChannelPlatform.FACEBOOK: "facebook_video_id",
+}
+
+_platform_uploaded_at_columns: dict[ChannelPlatform, str] = {
+    ChannelPlatform.YOUTUBE: "youtube_uploaded_at",
+    ChannelPlatform.INSTAGRAM: "instagram_uploaded_at",
+    ChannelPlatform.FACEBOOK: "facebook_uploaded_at",
+}
+
+
+def platform_column(platform: ChannelPlatform) -> str:
+    """The publication table column recording a completed upload for a platform."""
+    return _platform_id_columns[platform]
+
+
+def platform_uploaded_at_column(platform: ChannelPlatform) -> str:
+    """The publication table column holding that platform's UTC upload timestamp."""
+    return _platform_uploaded_at_columns[platform]
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """One timestamped activity-feed entry shown on the status panel."""
+
+    ts: str
+    kind: str
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +55,8 @@ class SourceVideo:
 
 @dataclass(frozen=True, slots=True)
 class ShortPlan:
+    """The metadata container the three platform uploaders consume."""
+
     start_seconds: float
     duration_seconds: float
     title: str
@@ -46,57 +72,42 @@ class InstagramUploadResult:
 
 
 @dataclass(frozen=True, slots=True)
-class JobClip:
-    job_id: str
-    clip_index: int
-    start_seconds: float
-    duration_seconds: float
+class Publication:
+    """One finished HotClip export queued for scheduled publishing."""
+
+    id: str
+    mp4_path: str
+    cover_path: str | None
     title: str
     description: str
     instagram_caption: str
-    metadata_ready: bool
-    enhancement_complete: bool
-    output_path: str | None
-    thumbnail_path: str | None
+    source_label: str
+    queued_at: str
     youtube_video_id: str | None
+    youtube_uploaded_at: str | None
     instagram_media_id: str | None
     instagram_url: str | None
+    instagram_uploaded_at: str | None
     facebook_video_id: str | None
     facebook_url: str | None
+    facebook_uploaded_at: str | None
     error: str | None
 
-    @property
-    def youtube_url(self) -> str | None:
-        if not self.youtube_video_id:
-            return None
-        return f"https://youtube.com/shorts/{self.youtube_video_id}"
+    def platform_id(self, platform: ChannelPlatform) -> str | None:
+        if platform is ChannelPlatform.YOUTUBE:
+            return self.youtube_video_id
+        if platform is ChannelPlatform.INSTAGRAM:
+            return self.instagram_media_id
+        return self.facebook_video_id
 
+    def published_everywhere(self, platforms: list[ChannelPlatform]) -> bool:
+        return all(self.platform_id(platform) for platform in platforms)
 
-@dataclass(frozen=True, slots=True)
-class Job:
-    id: str
-    chat_id: int
-    user_id: int
-    source_url: str
-    status: JobStatus
-    progress_message: str
-    source_title: str | None
-    short_title: str | None
-    short_description: str | None
-    instagram_caption: str | None
-    output_path: str | None
-    youtube_video_id: str | None
-    instagram_media_id: str | None
-    instagram_url: str | None
-    facebook_video_id: str | None
-    facebook_url: str | None
-    archive_path: str | None
-    error: str | None
-    created_at: str
-    updated_at: str
-
-    @property
-    def youtube_url(self) -> str | None:
-        if not self.youtube_video_id:
-            return None
-        return f"https://youtube.com/shorts/{self.youtube_video_id}"
+    def to_plan(self, duration_seconds: float) -> ShortPlan:
+        return ShortPlan(
+            start_seconds=0.0,
+            duration_seconds=duration_seconds,
+            title=self.title,
+            description=self.description,
+            instagram_caption=self.instagram_caption,
+        )
