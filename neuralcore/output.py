@@ -46,34 +46,42 @@ def ask(brain, subject: str | None, relation: str | None, use_state: bool = Fals
     return Answer(concept=concept, confidence=conf, activation_norm=float(np.linalg.norm(y)))
 
 
-def answer_surface(brain, surface: str) -> Answer | None:
-    """Parse a natural toy-language question, then ask the dynamics.
+def parse_question(surface: str) -> tuple[str, str] | None:
+    """Parse a natural toy-language question into a (subject, relation) query.
 
-    'what does the fire burn?'   ->  (fire, burns, ?)
-    'what is heated by the sun?' ->  (sun, heats, ?)
-    'what heats the water?'      ->  (water, inv_heats, ?)
-    'what can the bird do?'      ->  (bird, can, ?)
-    'fire / burns / ?'           ->  direct triple form
+    'what does the fire burn?'   ->  (fire, burns)
+    'what is heated by the sun?' ->  (sun, heats)
+    'what heats the water?'      ->  (water, inv_heats)
+    'what can the bird do?'      ->  (bird, can)
+    'fire / burns / ?'           ->  (fire, burns)
     """
     text = surface.strip().lower().rstrip("?").strip()
     if "/" in text:
         parts = [p.strip() for p in text.split("/")]
         if len(parts) == 3 and parts[2] == "?":
-            return ask(brain, parts[0], parts[1])
+            return parts[0], parts[1]
         return None
 
     flat = " ".join(t for t in tokenize(text) if t not in _DROP)
 
     m = _R_CAN.match(flat)
     if m:
-        return ask(brain, m.group(1), "can")
+        return m.group(1), "can"
     m = _R_PASSIVE.match(flat)
     if m:
-        return ask(brain, m.group(2), m.group(1))
+        return m.group(2), m.group(1)
     m = _R_DO.match(flat)
     if m:
-        return ask(brain, m.group(1), m.group(2))
+        return m.group(1), m.group(2)
     m = _R_INVERSE.match(flat)
     if m:
-        return ask(brain, m.group(2), "inv_" + m.group(1))
+        return m.group(2), "inv_" + m.group(1)
     return None
+
+
+def answer_surface(brain, surface: str) -> Answer | None:
+    """Parse a question, then ask the dynamics."""
+    parsed = parse_question(surface)
+    if parsed is None:
+        return None
+    return ask(brain, *parsed)
