@@ -20,7 +20,8 @@ from .errors import UploadError, UploadLimitError, WorkflowError
 from .facebook import FacebookReelUploader
 from .instagram import InstagramUploader
 from .media import MediaProcessor
-from .models import Job, JobClip, JobStatus, ShortPlan, SourceVideo
+from .models import ChannelPlatform, Job, JobClip, JobStatus, ShortPlan, SourceVideo, WordCue
+from .subtitles import SubtitleStyle, resolve_font_name, write_clip_ass
 from .youtube import YouTubeUploader
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,18 @@ class WorkflowPipeline:
         self.services = services
         self.on_status = on_status
         self.on_downloaded = on_downloaded
+        if settings.subtitles_enabled:
+            self._subtitle_style: SubtitleStyle | None = SubtitleStyle(
+                font_name=resolve_font_name(
+                    settings.subtitles_font_dir,
+                    settings.subtitles_font_name,
+                ),
+                font_size=settings.subtitles_font_size,
+                position_y=settings.subtitles_position_y,
+                words_per_screen=settings.subtitles_words_per_screen,
+            )
+        else:
+            self._subtitle_style = None
 
     async def process(
         self,
@@ -259,6 +272,10 @@ class WorkflowPipeline:
                     )
                 full_transcript = await self.services.planner.transcribe(audio_path)
 
+            transcript_words: list[WordCue] | None = None
+            if self._subtitle_style is not None:
+                transcript_words = await self._transcript_words(job.id, job_dir, audio_path)
+
             uploaded_platforms = self._configured_platforms()
             blocked_platforms: dict[str, str] = {
                 name: reason
@@ -303,6 +320,7 @@ class WorkflowPipeline:
                         total_clips,
                         job_dir,
                         blocked_platforms,
+                        transcript_words,
                     )
                 except Exception as exc:
                     self.repository.update_clip(
@@ -445,6 +463,7 @@ class WorkflowPipeline:
                 Path(clip.output_path),
                 job_dir / f"short-{clip.clip_index:03d}.mp4",
                 job_dir / f"short-{clip.clip_index:03d}-enhanced.mp4",
+                job_dir / f"short-{clip.clip_index:03d}-subtitled.mp4",
             ]
             if clip.thumbnail_path:
                 candidates.append(Path(clip.thumbnail_path))
@@ -498,6 +517,7 @@ class WorkflowPipeline:
         total_clips: int,
         job_dir: Path,
         blocked_platforms: dict[str, str],
+        transcript_words: list[WordCue] | None = None,
     ) -> JobClip:
         if self._clip_published_everywhere(clip):
             # Every enabled platform already has this clip; never re-render or re-upload it.
@@ -575,6 +595,56 @@ class WorkflowPipeline:
                 error=None,
             )
 
+        if (
+            self._subtitle_style is not None
+            and transcript_words is not None
+            and output_path.exists()
+        ):
+            subtitled_path = job_dir / f"short-{clip.clip_index:03d}-subtitled.mp4"
+            if output_path.name != subtitled_path.name:
+                if subtitled_path.exists() and not await self._probe_duration_ok(
+                    subtitled_path, plan
+                ):
+                    subtitled_path.unlink(missing_ok=True)
+                if not subtitled_path.exists():
+                    await self._status(
+                        job.id,
+                        JobStatus.RENDERING,
+                        f"Adding word-by-word captions to Short "
+                        f"{clip.clip_index}/{total_clips}",
+                    )
+                    ass_path = job_dir / f"short-{clip.clip_index:03d}.ass"
+                    await asyncio.to_thread(
+                        write_clip_ass,
+                        transcript_words,
+                        plan.start_seconds,
+                        plan.duration_seconds,
+                        ass_path,
+                        self._subtitle_style,
+                    )
+                    fonts_dir = (
+                        self.settings.subtitles_font_dir
+                        if self.settings.subtitles_font_dir.is_dir()
+                        else None
+                    )
+                    await asyncio.to_thread(
+                        self.services.media.burn_subtitles,
+                        output_path,
+                        ass_path,
+                        subtitled_path,
+                        fonts_dir,
+                    )
+                if not await self._probe_duration_ok(subtitled_path, plan):
+                    subtitled_path.unlink(missing_ok=True)
+                    raise WorkflowError("Subtitled video is shorter than the rendered Short.")
+                output_path = subtitled_path
+                clip = self.repository.update_clip(
+                    job.id,
+                    clip.clip_index,
+                    output_path=str(subtitled_path),
+                    error=None,
+                )
+
         thumbnail_path = (
             Path(clip.thumbnail_path)
             if clip.thumbnail_path
@@ -593,171 +663,293 @@ class WorkflowPipeline:
                 thumbnail_path=str(thumbnail_path),
             )
 
+        if self.settings.youtube_upload_immediate:
+            clip = await self._maybe_upload_youtube(
+                job,
+                clip,
+                plan,
+                output_path,
+                thumbnail_path,
+                total_clips,
+                blocked_platforms,
+            )
+        if self.settings.instagram_upload_immediate:
+            clip = await self._maybe_upload_instagram(
+                job,
+                clip,
+                plan,
+                output_path,
+                total_clips,
+                blocked_platforms,
+            )
+        if self.settings.facebook_upload_immediate:
+            clip = await self._maybe_upload_facebook(
+                job,
+                clip,
+                plan,
+                output_path,
+                total_clips,
+                blocked_platforms,
+            )
+        return clip
+
+    async def _probe_duration_ok(self, path: Path, plan: ShortPlan) -> bool:
+        try:
+            duration = await asyncio.to_thread(self.services.media.probe_duration, path)
+        except WorkflowError:
+            return False
+        return duration >= max(1, plan.duration_seconds - 1)
+
+    async def _transcript_words(
+        self,
+        job_id: str,
+        job_dir: Path,
+        audio_path: Path,
+    ) -> list[WordCue] | None:
+        """Word timings for captions, cached per job so resumes cost no API calls."""
+        words_json = job_dir / "transcript-words.json"
+        saved = _load_saved_words(words_json)
+        if saved is not None:
+            return saved
+        if not audio_path.exists():
+            logger.info("Job %s: caption timing unavailable (no transcript audio)", job_id)
+            return None
+        words = list(await self.services.planner.transcribe_words(audio_path))
+        _save_words(words_json, words)
+        return words
+
+    async def _maybe_upload_youtube(
+        self,
+        job: Job,
+        clip: JobClip,
+        plan: ShortPlan,
+        output_path: Path,
+        thumbnail_path: Path,
+        total_clips: int,
+        blocked_platforms: dict[str, str],
+    ) -> JobClip:
         if (
-            self.services.youtube_uploader
-            and not clip.youtube_video_id
-            and "YouTube" not in blocked_platforms
+            not self.services.youtube_uploader
+            or clip.youtube_video_id
+            or "YouTube" in blocked_platforms
         ):
+            return clip
+        await self._status(
+            job.id,
+            JobStatus.UPLOADING,
+            f"Uploading Short {clip.clip_index}/{total_clips} to YouTube as "
+            f"{self.settings.youtube_privacy_status}",
+        )
+        try:
+            youtube_video_id = await self.services.youtube_uploader.upload(
+                output_path,
+                plan,
+                thumbnail_path,
+            )
+            clip = self.repository.update_clip(
+                job.id,
+                clip.clip_index,
+                youtube_video_id=youtube_video_id,
+                youtube_uploaded_at=_utc_now_iso(),
+                error=None,
+            )
+            if clip.clip_index == 1:
+                self.repository.update(job.id, youtube_video_id=youtube_video_id)
             await self._status(
                 job.id,
                 JobStatus.UPLOADING,
-                f"Uploading Short {clip.clip_index}/{total_clips} to YouTube as "
-                f"{self.settings.youtube_privacy_status}",
+                f"YouTube Short {clip.clip_index}/{total_clips} is public: "
+                f"https://www.youtube.com/shorts/{youtube_video_id}",
             )
-            try:
-                youtube_video_id = await self.services.youtube_uploader.upload(
-                    output_path,
-                    plan,
-                    thumbnail_path,
-                )
-                clip = self.repository.update_clip(
-                    job.id,
-                    clip.clip_index,
-                    youtube_video_id=youtube_video_id,
-                    error=None,
-                )
-                if clip.clip_index == 1:
-                    self.repository.update(job.id, youtube_video_id=youtube_video_id)
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"YouTube Short {clip.clip_index}/{total_clips} is public: "
-                    f"https://www.youtube.com/shorts/{youtube_video_id}",
-                )
-            except UploadLimitError as exc:
-                blocked_platforms["YouTube"] = str(exc)
-                self.services.unavailable_platforms["YouTube"] = str(exc)
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    "YouTube limit reached",
-                )
-            except UploadError as exc:
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"YouTube Short {clip.clip_index}/{total_clips} failed; its upload remains "
-                    f"pending, and the bot will continue with the next clip: {exc}",
-                )
+        except UploadLimitError as exc:
+            blocked_platforms["YouTube"] = str(exc)
+            self.services.unavailable_platforms["YouTube"] = str(exc)
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                "YouTube limit reached",
+            )
+        except UploadError as exc:
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                f"YouTube Short {clip.clip_index}/{total_clips} failed; its upload remains "
+                f"pending, and the bot will continue with the next clip: {exc}",
+            )
+        return clip
 
+    async def _maybe_upload_instagram(
+        self,
+        job: Job,
+        clip: JobClip,
+        plan: ShortPlan,
+        output_path: Path,
+        total_clips: int,
+        blocked_platforms: dict[str, str],
+    ) -> JobClip:
         if (
-            self.services.instagram_uploader
-            and not clip.instagram_media_id
-            and "Instagram" not in blocked_platforms
+            not self.services.instagram_uploader
+            or clip.instagram_media_id
+            or "Instagram" in blocked_platforms
         ):
-            sequence_index = self.repository.clip_sequence_index(job.id, clip.clip_index)
-            instagram_plan = self._instagram_plan(plan, sequence_index)
-            if instagram_plan.instagram_caption != clip.instagram_caption:
-                clip = self.repository.update_clip(
+            return clip
+        sequence_index = self.repository.clip_sequence_index(job.id, clip.clip_index)
+        instagram_plan = self._instagram_plan(plan, sequence_index)
+        if instagram_plan.instagram_caption != clip.instagram_caption:
+            clip = self.repository.update_clip(
+                job.id,
+                clip.clip_index,
+                instagram_caption=instagram_plan.instagram_caption,
+            )
+            if clip.clip_index == 1:
+                self.repository.update(
                     job.id,
-                    clip.clip_index,
                     instagram_caption=instagram_plan.instagram_caption,
                 )
-                if clip.clip_index == 1:
-                    self.repository.update(
-                        job.id,
-                        instagram_caption=instagram_plan.instagram_caption,
-                    )
-            await self._status(
-                job.id,
-                JobStatus.UPLOADING,
-                f"Publishing Reel {clip.clip_index}/{total_clips} to Instagram",
+        await self._status(
+            job.id,
+            JobStatus.UPLOADING,
+            f"Publishing Reel {clip.clip_index}/{total_clips} to Instagram",
+        )
+        try:
+            instagram = await self.services.instagram_uploader.upload(
+                output_path, instagram_plan
             )
-            try:
-                instagram = await self.services.instagram_uploader.upload(
-                    output_path, instagram_plan
-                )
-                clip = self.repository.update_clip(
+            clip = self.repository.update_clip(
+                job.id,
+                clip.clip_index,
+                instagram_media_id=instagram.media_id,
+                instagram_url=instagram.permalink,
+                instagram_uploaded_at=_utc_now_iso(),
+                error=None,
+            )
+            if clip.clip_index == 1:
+                self.repository.update(
                     job.id,
-                    clip.clip_index,
                     instagram_media_id=instagram.media_id,
                     instagram_url=instagram.permalink,
-                    error=None,
                 )
-                if clip.clip_index == 1:
-                    self.repository.update(
-                        job.id,
-                        instagram_media_id=instagram.media_id,
-                        instagram_url=instagram.permalink,
-                    )
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"Instagram Reel {clip.clip_index}/{total_clips} is published: "
-                    f"{instagram.permalink}",
-                )
-            except UploadLimitError as exc:
-                blocked_platforms["Instagram"] = str(exc)
-                self.services.unavailable_platforms["Instagram"] = str(exc)
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    "Instagram upload limit reached; continuing local generation",
-                )
-            except UploadError as exc:
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"Instagram Reel {clip.clip_index}/{total_clips} failed; its upload remains "
-                    f"pending, and the bot will continue with the next Reel: {exc}",
-                )
-
-        if (
-            self.services.facebook_uploader
-            and not clip.facebook_video_id
-            and "Facebook" not in blocked_platforms
-        ):
             await self._status(
                 job.id,
                 JobStatus.UPLOADING,
-                f"Publishing Reel {clip.clip_index}/{total_clips} to Facebook",
+                f"Instagram Reel {clip.clip_index}/{total_clips} is published: "
+                f"{instagram.permalink}",
             )
-            try:
-                facebook_video_id, facebook_url = await self.services.facebook_uploader.upload(
-                    output_path, plan
-                )
-                clip = self.repository.update_clip(
+        except UploadLimitError as exc:
+            blocked_platforms["Instagram"] = str(exc)
+            self.services.unavailable_platforms["Instagram"] = str(exc)
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                "Instagram upload limit reached; continuing local generation",
+            )
+        except UploadError as exc:
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                f"Instagram Reel {clip.clip_index}/{total_clips} failed; its upload remains "
+                f"pending, and the bot will continue with the next Reel: {exc}",
+            )
+        return clip
+
+    async def _maybe_upload_facebook(
+        self,
+        job: Job,
+        clip: JobClip,
+        plan: ShortPlan,
+        output_path: Path,
+        total_clips: int,
+        blocked_platforms: dict[str, str],
+    ) -> JobClip:
+        if (
+            not self.services.facebook_uploader
+            or clip.facebook_video_id
+            or "Facebook" in blocked_platforms
+        ):
+            return clip
+        await self._status(
+            job.id,
+            JobStatus.UPLOADING,
+            f"Publishing Reel {clip.clip_index}/{total_clips} to Facebook",
+        )
+        try:
+            facebook_video_id, facebook_url = await self.services.facebook_uploader.upload(
+                output_path, plan
+            )
+            clip = self.repository.update_clip(
+                job.id,
+                clip.clip_index,
+                facebook_video_id=facebook_video_id,
+                facebook_url=facebook_url,
+                facebook_uploaded_at=_utc_now_iso(),
+                error=None,
+            )
+            if clip.clip_index == 1:
+                self.repository.update(
                     job.id,
-                    clip.clip_index,
                     facebook_video_id=facebook_video_id,
                     facebook_url=facebook_url,
-                    error=None,
                 )
-                if clip.clip_index == 1:
-                    self.repository.update(
-                        job.id,
-                        facebook_video_id=facebook_video_id,
-                        facebook_url=facebook_url,
-                    )
-                # A successful post means the platform is healthy again.
-                self.services.platform_cooldowns.pop("Facebook", None)
-                self.services.unavailable_platforms.pop("Facebook", None)
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"Facebook Reel {clip.clip_index}/{total_clips} is published: {facebook_url}",
-                )
-            except UploadLimitError as exc:
-                blocked_platforms["Facebook"] = str(exc)
-                self.services.unavailable_platforms["Facebook"] = str(exc)
-                self.services.platform_cooldowns["Facebook"] = (
-                    time.monotonic() + self.settings.facebook_limit_cooldown_hours * 3600
-                )
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"Facebook upload limit reached; pausing Facebook for "
-                    f"{self.settings.facebook_limit_cooldown_hours:g}h to let the limit "
-                    f"lift, then it will retry automatically: {exc}",
-                )
-            except UploadError as exc:
-                await self._status(
-                    job.id,
-                    JobStatus.UPLOADING,
-                    f"Facebook Reel {clip.clip_index}/{total_clips} failed; its upload remains "
-                    f"pending, and the bot will continue with the next Reel: {exc}",
-                )
+            # A successful post means the platform is healthy again.
+            self.services.platform_cooldowns.pop("Facebook", None)
+            self.services.unavailable_platforms.pop("Facebook", None)
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                f"Facebook Reel {clip.clip_index}/{total_clips} is published: {facebook_url}",
+            )
+        except UploadLimitError as exc:
+            blocked_platforms["Facebook"] = str(exc)
+            self.services.unavailable_platforms["Facebook"] = str(exc)
+            self.services.platform_cooldowns["Facebook"] = (
+                time.monotonic() + self.settings.facebook_limit_cooldown_hours * 3600
+            )
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                f"Facebook upload limit reached; pausing Facebook for "
+                f"{self.settings.facebook_limit_cooldown_hours:g}h to let the limit "
+                f"lift, then it will retry automatically: {exc}",
+            )
+        except UploadError as exc:
+            await self._status(
+                job.id,
+                JobStatus.UPLOADING,
+                f"Facebook Reel {clip.clip_index}/{total_clips} failed; its upload remains "
+                f"pending, and the bot will continue with the next Reel: {exc}",
+            )
         return clip
+
+    async def publish_clip(self, job: Job, clip: JobClip, platform: ChannelPlatform) -> JobClip:
+        """Upload one rendered clip to a single platform (used by the scheduler).
+
+        The clip must already be rendered on disk. The platform column is updated
+        on success; limit and temporary failures leave the clip pending.
+        """
+        if not clip.output_path:
+            raise WorkflowError(
+                f"Clip {clip.clip_index} of job {job.id} has no rendered file to publish."
+            )
+        output_path = Path(clip.output_path)
+        if not output_path.exists():
+            raise WorkflowError(
+                f"Rendered clip file is missing: {output_path}. Re-render the job first."
+            )
+        plan = self._plan_from_clip(clip)
+        total_clips = len(self.repository.list_clips(job.id))
+        blocked: dict[str, str] = {}
+        if platform is ChannelPlatform.YOUTUBE:
+            thumbnail_path = Path(clip.thumbnail_path) if clip.thumbnail_path else output_path
+            return await self._maybe_upload_youtube(
+                job, clip, plan, output_path, thumbnail_path, total_clips, blocked
+            )
+        if platform is ChannelPlatform.INSTAGRAM:
+            return await self._maybe_upload_instagram(
+                job, clip, plan, output_path, total_clips, blocked
+            )
+        return await self._maybe_upload_facebook(
+            job, clip, plan, output_path, total_clips, blocked
+        )
 
     @staticmethod
     def _has_legacy_render(job: Job) -> bool:
@@ -907,6 +1099,43 @@ class JobQueue:
                 logger.exception("Unexpected queue failure for job %s", job_id)
             finally:
                 self.queue.task_done()
+
+
+def _utc_now_iso() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _load_saved_words(path: Path) -> list[WordCue] | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, list):
+        return None
+    words: list[WordCue] = []
+    for item in raw:
+        try:
+            word = str(item["word"]).strip()
+            start = float(item["start"])
+            end = float(item["end"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if word:
+            words.append(WordCue(word=word, start_seconds=start, end_seconds=end))
+    return words
+
+
+def _save_words(path: Path, words: list[WordCue]) -> None:
+    payload = [
+        {"word": cue.word, "start": round(cue.start_seconds, 3), "end": round(cue.end_seconds, 3)}
+        for cue in words
+    ]
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        logger.warning("Could not persist caption timings to %s", path)
 
 
 def _safe_error(exc: Exception) -> str:

@@ -13,7 +13,7 @@ from shorts_bot.ai import (
     normalize_plan,
     normalize_plans,
 )
-from shorts_bot.models import ShortPlan, SourceVideo
+from shorts_bot.models import ShortPlan, SourceVideo, TranscriptResult
 
 
 def source(duration: float = 120) -> SourceVideo:
@@ -118,10 +118,11 @@ async def test_retries_with_smaller_transcript_when_prompt_is_too_large() -> Non
         chat=SimpleNamespace(completions=FakeCompletions())
     )
 
-    async def fake_transcribe(_audio_path: Path) -> str:
-        return "\n".join(f"[{i}-{i + 1}] Segment {i}" for i in range(3000))
+    async def fake_transcribe(_audio_path: Path) -> TranscriptResult:
+        text = "\n".join(f"[{i}-{i + 1}] Segment {i}" for i in range(3000))
+        return TranscriptResult(text=text, words=())
 
-    planner._transcribe = fake_transcribe  # type: ignore[method-assign]
+    planner._transcribe_full = fake_transcribe  # type: ignore[method-assign]
     plan = await planner.create_plan(Path("unused.mp3"), source())
 
     assert plan.start_seconds == 1

@@ -13,6 +13,18 @@ from .errors import ConfigurationError
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
+_SCHEDULE_TIMES_RE = re.compile(
+    r"^(?:[01]\d|2[0-3]):[0-5]\d(?:\s*,\s*(?:[01]\d|2[0-3]):[0-5]\d)*$"
+)
+
+
+def _validate_schedule_times(name: str, value: str) -> None:
+    if not value:
+        return
+    if not _SCHEDULE_TIMES_RE.fullmatch(value):
+        raise ConfigurationError(
+            f"{name} must be comma-separated 24-hour times like 09:30,18:00."
+        )
 _DEFAULT_GROQ_MODEL = "qwen/qwen3.6-27b"
 _DEPRECATED_GROQ_MODELS = {
     "llama-3.1-8b-instant": _DEFAULT_GROQ_MODEL,
@@ -141,6 +153,19 @@ class Settings:
     database_path: Path
     keep_work_files: bool
     delete_uploaded_clips: bool
+    subtitles_enabled: bool
+    subtitles_words_per_screen: int
+    subtitles_font_size: int
+    subtitles_position_y: int
+    subtitles_font_name: str
+    subtitles_font_dir: Path
+    channels_file: Path
+    channel_scan_max_videos: int
+    channel_scan_interval_minutes: int
+    schedule_timezone: str
+    youtube_schedule_times: str
+    instagram_schedule_times: str
+    facebook_schedule_times: str
     rights_acknowledged: bool
     links_file: Path
     downloaded_links_log: Path
@@ -260,6 +285,21 @@ class Settings:
             database_path=database_path,
             keep_work_files=_bool_env("KEEP_WORK_FILES", True),
             delete_uploaded_clips=_bool_env("DELETE_UPLOADED_CLIPS", True),
+            subtitles_enabled=_bool_env("SUBTITLES_ENABLED", True),
+            subtitles_words_per_screen=_int_env("SUBTITLES_WORDS_PER_SCREEN", 4),
+            subtitles_font_size=_int_env("SUBTITLES_FONT_SIZE", 62),
+            subtitles_position_y=_int_env("SUBTITLES_POSITION_Y", 850),
+            subtitles_font_name=os.getenv("SUBTITLES_FONT_NAME", "Anton").strip() or "Anton",
+            subtitles_font_dir=Path(
+                os.getenv("SUBTITLES_FONT_DIR", "fonts")
+            ).expanduser(),
+            channels_file=Path(os.getenv("CHANNELS_FILE", "channels.txt")).expanduser(),
+            channel_scan_max_videos=_int_env("CHANNEL_SCAN_MAX_VIDEOS", 5),
+            channel_scan_interval_minutes=_int_env("CHANNEL_SCAN_INTERVAL_MINUTES", 60),
+            schedule_timezone=os.getenv("SCHEDULE_TIMEZONE", "").strip(),
+            youtube_schedule_times=os.getenv("YOUTUBE_SCHEDULE_TIMES", "").strip(),
+            instagram_schedule_times=os.getenv("INSTAGRAM_SCHEDULE_TIMES", "").strip(),
+            facebook_schedule_times=os.getenv("FACEBOOK_SCHEDULE_TIMES", "").strip(),
             rights_acknowledged=_bool_env("RIGHTS_ACKNOWLEDGED", False),
             links_file=Path(os.getenv("LINKS_FILE", "links.txt")).expanduser(),
             downloaded_links_log=Path(
@@ -327,12 +367,64 @@ class Settings:
             raise ConfigurationError("CREDENTIAL_CHECK_MINUTES must be between 5 and 1440.")
         if not 1 <= self.pending_retry_jobs_per_cycle <= 20:
             raise ConfigurationError("PENDING_RETRY_JOBS_PER_CYCLE must be between 1 and 20.")
+        if not 1 <= self.subtitles_words_per_screen <= 8:
+            raise ConfigurationError("SUBTITLES_WORDS_PER_SCREEN must be between 1 and 8.")
+        if not 24 <= self.subtitles_font_size <= 140:
+            raise ConfigurationError("SUBTITLES_FONT_SIZE must be between 24 and 140.")
+        if not 0 <= self.subtitles_position_y <= 1920:
+            raise ConfigurationError("SUBTITLES_POSITION_Y must be between 0 and 1920.")
+        if not 1 <= self.channel_scan_max_videos <= 50:
+            raise ConfigurationError("CHANNEL_SCAN_MAX_VIDEOS must be between 1 and 50.")
+        if not 5 <= self.channel_scan_interval_minutes <= 1_440:
+            raise ConfigurationError(
+                "CHANNEL_SCAN_INTERVAL_MINUTES must be between 5 and 1440."
+            )
+        if self.schedule_timezone:
+            try:
+                from zoneinfo import ZoneInfo
+
+                ZoneInfo(self.schedule_timezone)
+            except Exception as exc:
+                raise ConfigurationError(
+                    f"SCHEDULE_TIMEZONE is not a valid IANA timezone: "
+                    f"{self.schedule_timezone!r} (e.g. Asia/Kolkata)."
+                ) from exc
+        for name, value in (
+            ("YOUTUBE_SCHEDULE_TIMES", self.youtube_schedule_times),
+            ("INSTAGRAM_SCHEDULE_TIMES", self.instagram_schedule_times),
+            ("FACEBOOK_SCHEDULE_TIMES", self.facebook_schedule_times),
+        ):
+            _validate_schedule_times(name, value)
         if (
             self.ytdlp_cookies_from_browser
             and self.ytdlp_cookies_from_browser not in _SUPPORTED_COOKIE_BROWSERS
         ):
             supported = ", ".join(sorted(_SUPPORTED_COOKIE_BROWSERS))
             raise ConfigurationError(f"YTDLP_COOKIES_FROM_BROWSER must be one of: {supported}.")
+
+    @property
+    def youtube_upload_immediate(self) -> bool:
+        """Upload to YouTube right after rendering unless a schedule is configured."""
+        return not self.youtube_schedule_times
+
+    @property
+    def instagram_upload_immediate(self) -> bool:
+        return not self.instagram_schedule_times
+
+    @property
+    def facebook_upload_immediate(self) -> bool:
+        return not self.facebook_schedule_times
+
+    @property
+    def scheduled_platforms(self) -> tuple[str, ...]:
+        platforms: list[str] = []
+        if self.upload_youtube and self.youtube_schedule_times:
+            platforms.append("YouTube")
+        if self.upload_instagram and self.instagram_schedule_times:
+            platforms.append("Instagram")
+        if self.upload_facebook and self.facebook_schedule_times:
+            platforms.append("Facebook")
+        return tuple(platforms)
 
     def validate_pipeline(self) -> None:
         if not self.rights_acknowledged:

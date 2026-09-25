@@ -19,6 +19,24 @@
       "justMyCode": true
     },
     {
+      "name": "Scan channels once",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "shorts_bot.file_queue",
+      "args": ["--scan-channels"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Publish due YouTube uploads",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "shorts_bot.file_queue",
+      "args": ["--publish", "youtube"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
       "name": "Authorize YouTube",
       "type": "debugpy",
       "request": "launch",

@@ -8,6 +8,12 @@ from pathlib import Path
 from .errors import ConfigurationError, MediaError
 
 
+def _filter_escape(value: Path) -> str:
+    """Escape a filesystem path for use inside an FFmpeg filtergraph argument."""
+    text = str(value)
+    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
 class MediaProcessor:
     def __init__(
         self,
@@ -175,6 +181,50 @@ class MediaProcessor:
         self._run(command, timeout=1800)
         if not output.exists() or output.stat().st_size == 0:
             raise MediaError("FFmpeg did not create the Short.")
+        return output
+
+    def burn_subtitles(
+        self,
+        video: Path,
+        ass_path: Path,
+        output: Path,
+        fonts_dir: Path | None = None,
+    ) -> Path:
+        """Burn an ASS subtitle script into the video (video stream re-encoded, audio copied)."""
+        output.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_filter = f"ass='{_filter_escape(ass_path.resolve())}'"
+        if fonts_dir is not None:
+            subtitle_filter += f":fontsdir='{_filter_escape(fonts_dir.resolve())}'"
+        command = [
+            self.ffmpeg,
+            "-y",
+            "-i",
+            str(video),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-vf",
+            subtitle_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            self.video_preset,
+            "-crf",
+            str(self.video_crf),
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+        self._run(command, timeout=1800)
+        if not output.exists() or output.stat().st_size == 0:
+            raise MediaError("FFmpeg did not create the subtitled video.")
         return output
 
     def generate_thumbnail(self, video: Path, output: Path, at_seconds: float) -> Path:

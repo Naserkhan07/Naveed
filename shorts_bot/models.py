@@ -5,6 +5,35 @@ from enum import StrEnum
 from pathlib import Path
 
 
+class ChannelPlatform(StrEnum):
+    YOUTUBE = "YouTube"
+    INSTAGRAM = "Instagram"
+    FACEBOOK = "Facebook"
+
+
+_platform_columns: dict[ChannelPlatform, str] = {
+    ChannelPlatform.YOUTUBE: "youtube_video_id",
+    ChannelPlatform.INSTAGRAM: "instagram_media_id",
+    ChannelPlatform.FACEBOOK: "facebook_video_id",
+}
+
+_platform_uploaded_at_columns: dict[ChannelPlatform, str] = {
+    ChannelPlatform.YOUTUBE: "youtube_uploaded_at",
+    ChannelPlatform.INSTAGRAM: "instagram_uploaded_at",
+    ChannelPlatform.FACEBOOK: "facebook_uploaded_at",
+}
+
+
+def platform_column(platform: ChannelPlatform) -> str:
+    """The JobClip column that records a completed upload for a platform."""
+    return _platform_columns[platform]
+
+
+def platform_uploaded_at_column(platform: ChannelPlatform) -> str:
+    """The JobClip column holding the UTC timestamp of that platform's upload."""
+    return _platform_uploaded_at_columns[platform]
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     DOWNLOADING = "downloading"
@@ -37,6 +66,23 @@ class ShortPlan:
     description: str
     instagram_caption: str = ""
     selection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WordCue:
+    """One spoken word with absolute source-video timing in seconds."""
+
+    word: str
+    start_seconds: float
+    end_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptResult:
+    """Timestamped transcript text plus word-level timing for subtitles."""
+
+    text: str
+    words: tuple[WordCue, ...]
 
 
 @dataclass(frozen=True, slots=True)

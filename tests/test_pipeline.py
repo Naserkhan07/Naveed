@@ -11,6 +11,7 @@ from shorts_bot.models import (
     JobStatus,
     ShortPlan,
     SourceVideo,
+    WordCue,
 )
 from shorts_bot.pipeline import WorkflowPipeline, WorkflowServices
 
@@ -103,6 +104,7 @@ def settings_for(tmp_path: Path) -> Settings:
         upload_facebook=False,
         delete_uploaded_clips=False,
         shorts_selection_mode="ai_highlights",
+        subtitles_enabled=False,
         youtube_channel_id="UC123",
         instagram_user_id="1789",
         instagram_access_token="token",
@@ -710,3 +712,76 @@ async def test_facebook_upload_limit_sets_cooldown_and_pauses_facebook(
     assert "Facebook" in services.platform_cooldowns
     assert services.platform_unavailable("Facebook") is not None
     assert any("pausing Facebook for 24h" in message for message in messages)
+
+
+class SubtitleFakeMedia(FakeMedia):
+    def __init__(self) -> None:
+        self.burn_calls = 0
+
+    def burn_subtitles(
+        self,
+        video: Path,
+        ass_path: Path,
+        output: Path,
+        fonts_dir: Path | None = None,
+    ) -> Path:
+        self.burn_calls += 1
+        assert video.read_bytes() == b"rendered"
+        ass_text = Path(ass_path).read_text(encoding="utf-8")
+        assert "[Script Info]" in ass_text
+        assert "HELLO" in ass_text
+        output.write_bytes(b"subtitled")
+        return output
+
+
+class SubtitleFakePlanner(FakePlanner):
+    async def transcribe_words(self, audio_path: Path):  # noqa: ANN201
+        return [
+            WordCue("hello", 10.0, 10.4),
+            WordCue("creator", 10.5, 10.9),
+            WordCue("world", 11.0, 11.4),
+        ]
+
+
+class SubtitleAwareYouTubeUploader:
+    async def upload(
+        self,
+        video_path: Path,
+        plan: ShortPlan,
+        thumbnail_path: Path | None = None,
+    ) -> str:
+        assert video_path.read_bytes() == b"subtitled"
+        return "youtube-id"
+
+
+async def test_pipeline_burns_word_synced_subtitles(tmp_path: Path) -> None:
+    settings = replace(settings_for(tmp_path), subtitles_enabled=True)
+    repository = JobRepository(settings.database_path)
+    job = repository.create(0, 0, "https://youtu.be/example")
+
+    media = SubtitleFakeMedia()
+    services = WorkflowServices(
+        downloader=FakeDownloader(),  # type: ignore[arg-type]
+        media=media,  # type: ignore[arg-type]
+        planner=SubtitleFakePlanner(),  # type: ignore[arg-type]
+        enhancer=None,
+        youtube_uploader=SubtitleAwareYouTubeUploader(),  # type: ignore[arg-type]
+        instagram_uploader=FakeInstagramUploader(),  # type: ignore[arg-type]
+    )
+    pipeline = WorkflowPipeline(settings, repository, services)
+
+    result = await pipeline.process(job.id)
+    clip = repository.list_clips(job.id)[0]
+    job_dir = settings.work_dir / "jobs" / job.id
+
+    assert result.status == JobStatus.COMPLETE
+    assert media.burn_calls == 1
+    assert clip.output_path is not None
+    assert clip.output_path.endswith("-subtitled.mp4")
+    assert Path(clip.output_path).read_bytes() == b"subtitled"
+    assert (job_dir / "transcript-words.json").exists()
+
+    # A resume must reuse the existing subtitled file instead of burning again.
+    second = await pipeline.process(job.id, reuse_downloaded=True)
+    assert second.status == JobStatus.COMPLETE
+    assert media.burn_calls == 1

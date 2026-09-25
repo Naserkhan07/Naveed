@@ -10,7 +10,7 @@ from typing import Any
 from groq import APIStatusError, AsyncGroq, RateLimitError
 
 from .errors import AIError
-from .models import ShortPlan, SourceVideo
+from .models import ShortPlan, SourceVideo, TranscriptResult, WordCue
 
 _SYSTEM_PROMPT = """You are an expert short-form video editor.
 Choose one compelling, self-contained, contiguous excerpt from the timestamped transcript.
@@ -52,6 +52,7 @@ class AIPlanner:
         self.instagram_caption_target_chars = instagram_caption_target_chars
         self.instagram_hashtags = instagram_hashtags or []
         self.metadata_delay_seconds = metadata_delay_seconds
+        self._transcript_cache: dict[str, TranscriptResult] = {}
 
     async def check_models(self) -> tuple[str, str]:
         """Validate Groq access and automatically select active non-OpenAI models."""
@@ -83,7 +84,11 @@ class AIPlanner:
         return self.model, self.transcription_model
 
     async def transcribe(self, audio_path: Path) -> str:
-        return await self._transcribe(audio_path)
+        return (await self._transcribe_full(audio_path)).text
+
+    async def transcribe_words(self, audio_path: Path) -> tuple[WordCue, ...]:
+        """Word-level timestamps for subtitle rendering (cached per audio file)."""
+        return (await self._transcribe_full(audio_path)).words
 
     async def enrich_plan(
         self,
@@ -109,7 +114,7 @@ class AIPlanner:
         source: SourceVideo,
         max_clips: int = 0,
     ) -> list[ShortPlan]:
-        full_transcript = await self._transcribe(audio_path)
+        full_transcript = (await self._transcribe_full(audio_path)).text
         base_plans = full_coverage_plans(
             source,
             target_duration=self.target_duration,
@@ -123,7 +128,7 @@ class AIPlanner:
         source: SourceVideo,
         max_clips: int,
     ) -> list[ShortPlan]:
-        full_transcript = await self._transcribe(audio_path)
+        full_transcript = (await self._transcribe_full(audio_path)).text
         possible_clips = max(1, int(source.duration_seconds // self.target_duration))
         target_clips = min(max_clips or 100, possible_clips)
         budgets = list(
@@ -382,14 +387,23 @@ repetition, and return only the corrected JSON object.
             f"Try again after the reset or change GROQ_MODEL. Details: {last_rate_limit}"
         ) from last_rate_limit
 
-    async def _transcribe(self, audio_path: Path) -> str:
+    async def _transcribe_full(self, audio_path: Path) -> TranscriptResult:
+        try:
+            stat = audio_path.stat()
+            cache_key = f"{audio_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            cache_key = str(audio_path.resolve())
+        cached = self._transcript_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             with audio_path.open("rb") as audio_file:
                 result = await self.client.audio.transcriptions.create(
                     model=self.transcription_model,
                     file=(audio_path.name, audio_file.read()),
                     response_format="verbose_json",
-                    timestamp_granularities=["segment"],
+                    timestamp_granularities=["segment", "word"],
                     temperature=0.0,
                 )
         except Exception as exc:
@@ -409,7 +423,63 @@ repetition, and return only the corrected JSON object.
                 lines.append(f"[0.00] {text}")
         if not lines:
             raise AIError("No speech could be transcribed from this video.")
-        return "\n".join(lines)
+
+        words = self._parse_words(result)
+        if not words:
+            # Older models/accounts may omit word timestamps even when requested.
+            # Estimate per-word timing inside each segment so subtitles still work.
+            words = _estimate_words_from_lines(lines)
+
+        transcript = TranscriptResult(text="\n".join(lines), words=words)
+        self._transcript_cache[cache_key] = transcript
+        return transcript
+
+    @staticmethod
+    def _parse_words(result: Any) -> tuple[WordCue, ...]:
+        cues: list[WordCue] = []
+        for item in _field(result, "words", []) or []:
+            word = str(_field(item, "word", "") or "").strip()
+            if not word:
+                continue
+            start = float(_field(item, "start", 0) or 0)
+            end = float(_field(item, "end", start) or start)
+            if end < start:
+                end = start
+            cues.append(WordCue(word=word, start_seconds=start, end_seconds=end))
+        return tuple(cues)
+
+
+_TIMESTAMPED_LINE = re.compile(
+    r"^\[(?P<start>\d+(?:\.\d+)?)(?:-(?P<end>\d+(?:\.\d+)?))?\]\s*(?P<text>.+)$"
+)
+
+
+def _estimate_words_from_lines(lines: list[str]) -> tuple[WordCue, ...]:
+    """Approximate per-word timing by spreading a segment's words across its duration."""
+    cues: list[WordCue] = []
+    for line in lines:
+        match = _TIMESTAMPED_LINE.match(line)
+        if not match:
+            continue
+        start = float(match.group("start"))
+        tokens = [token for token in match.group("text").split() if token.strip()]
+        if not tokens:
+            continue
+        end_value = match.group("end")
+        end = float(end_value) if end_value else start + len(tokens) * 0.45
+        if end <= start:
+            end = start + len(tokens) * 0.45
+        step = (end - start) / len(tokens)
+        for index, token in enumerate(tokens):
+            word_start = start + index * step
+            cues.append(
+                WordCue(
+                    word=token,
+                    start_seconds=word_start,
+                    end_seconds=word_start + step,
+                )
+            )
+    return tuple(cues)
 
 
 def _completion_request(

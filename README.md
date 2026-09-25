@@ -2,24 +2,25 @@
 
 This project runs entirely on your laptop from VS Code. There is no separate web-server or Docker installation requirement.
 
-Add authorized YouTube links to `links.txt`. The local program downloads each video, removes its link after a successful download, divides the usable timeline into consecutive 20–30 second clips based on the video's duration, generates detailed AI metadata and thumbnails, renders vertical Shorts, and publishes each one to YouTube, Instagram, and Facebook.
+Add authorized YouTube links to `links.txt` — or list your channels in `channels.txt` and the bot discovers their latest uploads itself. The program downloads each video, removes its link after a successful download, divides the usable timeline into consecutive 20–30 second clips based on the video's duration, generates detailed AI metadata and thumbnails, renders vertical Shorts with word-by-word burned-in captions, and publishes each one to YouTube, Instagram, and Facebook — immediately, or on your own per-platform schedule.
 
 > **Only process videos you own or have explicit permission/license to download, edit, and republish.** A publicly viewable video is not automatically licensed for reuse. The program requires `RIGHTS_ACKNOWLEDGED=true`.
 
 ## What the local workflow does
 
-1. Watches the local `links.txt` file.
+1. Watches the local `links.txt` file and, on a configurable interval, scans the channels listed in `channels.txt` for brand-new uploads.
 2. Downloads one authorized YouTube video at a time using the Python API equivalent of `yt-dlp -f "bestvideo+bestaudio" URL`, then remuxes those streams without source re-encoding.
-3. Removes every matching URL line immediately after the video downloads successfully.
+3. Removes every matching URL line immediately after the video downloads successfully (channel-discovered videos are remembered in SQLite instead).
 4. Records the URL and job ID in `work/downloaded-links.log`.
 5. Extracts speech audio locally with FFmpeg.
-6. Uses Groq `whisper-large-v3-turbo` for timestamped transcription.
+6. Uses Groq `whisper-large-v3-turbo` for timestamped **word-level** transcription.
 7. In `full_coverage` mode, calculates the clip count from source duration and covers the timeline with consecutive 20–30 second sections.
 8. Generates a detailed YouTube title/description and a separate Instagram caption for every clip.
 9. Renders every section as an H.264/AAC MP4 at the configured native-resolution policy.
 10. When enabled, temporarily hosts selected clips and runs API.market Real-ESRGAN before upload.
-11. Generates a JPEG thumbnail from the final (enhanced or original) clip.
-12. Uploads every result as a public YouTube Short, Instagram Reel, and Facebook Page Reel, using a custom YouTube thumbnail when eligible and a midpoint cover frame on Instagram.
+11. Burns **word-synced karaoke captions** into the final clip (all caps, cyan/yellow active-word highlight, Anton or bundled bold font).
+12. Generates a JPEG thumbnail from the final (enhanced, captioned, or original) clip.
+13. Uploads every result as a public YouTube Short, Instagram Reel, and Facebook Page Reel — right away for platforms without a schedule, or from a FIFO queue at each platform's configured times.
 
 A downloaded URL is removed before AI/render/upload starts. If a later stage fails, the URL remains in `work/downloaded-links.log`; copy it back into `links.txt` when you want to retry.
 
@@ -27,13 +28,17 @@ A downloaded URL is removed before AI/render/upload starts. If a later stage fai
 
 - `main.py` — easiest way to start the watcher from VS Code
 - `links.txt` — paste one YouTube URL per line
+- `channels.txt` — one channel per line whose new uploads are auto-queued
 - `channels.toml` — non-secret YouTube and Instagram account IDs
+- `fonts/` — caption fonts (drop `Anton-Regular.ttf` here for the signature look)
 - `.env` — local API keys and tokens; never committed
 - `client_secret.json` — Google OAuth desktop client; never committed
 - `youtube_token.json` — generated Google OAuth token; never committed
-- `work/jobs.db` — local job history
+- `work/jobs.db` — local job history, channel memory, and per-platform upload queue
 - `work/jobs/<job-id>/short-001.mp4`, `short-002.mp4`, … — rendered Shorts/Reels
+- `work/jobs/<job-id>/short-001-subtitled.mp4`, … — captioned final clips
 - `work/jobs/<job-id>/thumbnail-001.jpg`, `thumbnail-002.jpg`, … — generated covers
+- `work/jobs/<job-id>/transcript-words.json` — cached caption timings (saves re-transcription)
 - `work/downloaded-links.log` — downloaded URL audit history
 
 ## Do not save account passwords
@@ -310,6 +315,86 @@ https://youtube.com/shorts/VIDEO_THREE
 
 Save the file. Blank lines and comments beginning with `#` are preserved.
 
+## 8a. Word-by-word captions
+
+Every clip gets burned-in, viral-style subtitles automatically, synced to the actual speech
+(word-level Whisper timestamps):
+
+- All caps, very bold type (Anton when present, bundled DejaVu Sans Bold otherwise)
+- Currently spoken word highlighted in **cyan or yellow** (alternating per line), rest white
+- Thick black outline, dark drop shadow, and a soft glow for readability
+- 4 words per caption line (configurable), centered at ~44% of the frame height
+- A subtle pop when each caption line appears, plus a slight size emphasis on the active word
+
+The caption timings are cached in `work/jobs/<job-id>/transcript-words.json`, so resuming a job
+never re-pays the transcription cost. The captions are burned **after** the optional AI
+enhancement, so text always stays crisp. Thumbnails are taken from the captioned clip.
+
+For the exact reference look, download **Anton** (`Anton-Regular.ttf`, SIL OFL) from
+<https://fonts.google.com/specimen/Anton> and place it in `fonts/` — see `fonts/README.md`.
+If it is missing, the bundled DejaVu Sans Bold is used so captions always render.
+
+```dotenv
+SUBTITLES_ENABLED=true
+SUBTITLES_WORDS_PER_SCREEN=4
+SUBTITLES_FONT_SIZE=62
+SUBTITLES_POSITION_Y=850
+SUBTITLES_FONT_NAME=Anton
+SUBTITLES_FONT_DIR=fonts
+```
+
+Set `SUBTITLES_ENABLED=false` for clean clips without captions.
+
+## 8b. Automatic channel discovery
+
+Instead of pasting links manually, list source channels in `channels.txt` — one per line:
+
+```text
+@YourChannel
+https://www.youtube.com/@AnotherChannel
+UCxxxxxxxxxxxxxxxxxxxxxx
+```
+
+While watching (and on every `--once` / `--scan-channels` run), the bot reads each channel's
+newest uploads via yt-dlp metadata (no download, no YouTube API key) and queues the ones it has
+never seen. Every (channel, video) pair is remembered in `work/jobs.db`, so each video is
+processed exactly once, oldest-new first. Channel failures (network, renamed handle) are logged
+and never stop the rest of the scan.
+
+```dotenv
+CHANNELS_FILE=channels.txt
+CHANNEL_SCAN_MAX_VIDEOS=5        # newest N uploads inspected per channel per scan
+CHANNEL_SCAN_INTERVAL_MINUTES=60 # how often the watcher re-scans
+```
+
+`links.txt` entries are still processed as well, always before pending-upload retries.
+
+> Only add channels you own or have explicit permission/license to repurpose.
+
+## 8c. Scheduled uploads per platform
+
+Give any platform its own upload times and the bot separates **production** from **publishing**:
+
+```dotenv
+SCHEDULE_TIMEZONE=Asia/Kolkata
+YOUTUBE_SCHEDULE_TIMES=09:30,18:00
+INSTAGRAM_SCHEDULE_TIMES=13:00,20:00
+FACEBOOK_SCHEDULE_TIMES=11:00,17:00
+```
+
+- Platforms **without** times upload immediately after rendering (previous behavior).
+- Platforms **with** times render clips into a first-in-first-out pending queue; each passed
+  slot uploads the next pending clip to that platform only.
+- **Catch-up**: a slot that had nothing ready (or was missed) keeps its credit. As soon as a
+  clip is ready, one credit publishes one clip until the schedule is back on track — the
+  per-clip upload timestamps in `work/jobs.db` make credits correct even across restarts and
+  separate cron runs.
+- The long-running watcher checks due slots every cycle; serverless schedulers only need
+  `python -m shorts_bot.file_queue --publish youtube|instagram|facebook`.
+
+Respect platform ceilings when choosing slot counts: YouTube's default API quota fits ~6
+uploads/day, Instagram ~100/day, Facebook Page Reels ~30/day.
+
 ## 9. Start locally from VS Code
 
 ### Easiest method
@@ -415,6 +500,75 @@ shorts-cli --platform none "https://youtu.be/VIDEO_ID"
 
 `--platform none` creates the MP4 locally without uploading it.
 
+## Hands-free deployment on GitHub Actions
+
+The repository ships a complete serverless deployment under `.github/workflows/`. Everything
+runs on GitHub's free runner minutes (public repos); no laptop or VPS required.
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| **produce** | every 3 hours + manual | Scans channels, processes `links.txt`, renders captioned clips, retries pending uploads, runs any schedule-due uploads |
+| **publish-youtube** | 04:00 & 12:30 UTC (09:30 & 18:00 IST) + manual | Publishes the next queued Short to YouTube |
+| **publish-instagram** | 07:30 & 14:30 UTC (13:00 & 20:00 IST) + manual | Publishes the next queued Reel to Instagram |
+| **publish-facebook** | 05:30 & 11:30 UTC (11:00 & 17:00 IST) + manual | Publishes the next queued Reel to Facebook |
+| **intake-link** | issue opened with the link form | Appends your URL to `links.txt` and closes the issue |
+
+Queue state (`bot-state/jobs.db`, `links.txt`, `channels.txt`) is committed back to `main` by
+each run; rendered-but-unpublished clips travel between runs as a short-lived `pending-clips`
+workflow artifact. All four bot workflows share one concurrency group, so runs queue instead of
+racing the state file. YouTube Google OAuth, Meta tokens, and any cookie file live only in
+Secrets — they are written to temp files at runtime and never committed.
+
+### Set your upload times
+
+Times exist in **two** places that must agree (cron is static YAML, credit math uses the
+variable):
+
+1. **Repository variable** — Settings → Secrets and variables → Actions → Variables, e.g.
+   `YOUTUBE_SCHEDULE_TIMES = 09:30,18:00` (interpreted in `SCHEDULE_TIMEZONE`, default
+   `Asia/Kolkata`).
+2. **Workflow cron lines** (UTC!) in `.github/workflows/publish-*.yml`. The shipped crons match
+   the default example: `30 12 * * *` = 18:00 IST.
+
+GitHub's free-tier cron can fire a few minutes (occasionally ~30) late; uploads land within
+that window of the configured time.
+
+### Submit a link from your phone
+
+Open **Issues → New issue → 📥 Queue a video link**, paste the YouTube URL, submit. The
+intake workflow (owner-only, URL-validated) appends it to `links.txt` and it is processed on
+the next producer run. `channels.txt` edits work the same way through the normal GitHub editor.
+
+### Required secrets (Settings → Secrets and variables → Actions)
+
+| Secret | Content |
+|---|---|
+| `GROQ_API_KEY` | Groq API key |
+| `YOUTUBE_CLIENT_SECRET_JSON` | Full contents of `client_secret.json` |
+| `YOUTUBE_TOKEN_JSON` | Full contents of `youtube_token.json` |
+| `INSTAGRAM_ACCESS_TOKEN` | Long-lived Meta token (also reused for Facebook when `FACEBOOK_ACCESS_TOKEN` is unset) |
+| `FACEBOOK_PAGE_ID` | Numeric Facebook Page ID |
+| `FACEBOOK_ACCESS_TOKEN` | Long-lived Page token with `pages_manage_posts` (can be identical to the Instagram token) |
+| `YTDLP_COOKIES` | *(optional but recommended)* Netscape cookie export for YouTube downloads from datacenter IPs |
+
+Useful Variables: `YOUTUBE_SCHEDULE_TIMES`, `INSTAGRAM_SCHEDULE_TIMES`, `FACEBOOK_SCHEDULE_TIMES`
+(comma-separated local times), `SCHEDULE_TIMEZONE` (default `Asia/Kolkata`), `SUBTITLES_ENABLED`
+(default `true`), `YOUTUBE_PRIVACY_STATUS` (default `public`), `CHANNEL_SCAN_MAX_VIDEOS`
+(default `5`).
+
+### Known cloud limitations
+
+- **Timing precision**: GitHub cron is approximate. If to-the-minute timing ever becomes
+  critical, the same `--publish` commands run exactly on time under a VPS/Pi cron or systemd
+  timer instead.
+- **YouTube download bot-checks**: datacenter IPs are more often challenged; add the
+  `YTDLP_COOKIES` secret and YouTube may still occasionally refuse a run — the scheduler's
+  catch-up credits recover automatically on the next run.
+- **Token hygiene**: Meta tokens still need rotation (~60 days) and the YouTube OAuth refresh
+  token is long-lived but must remain valid; if a run reports `invalid_grant`, re-run
+  `python -m shorts_bot.youtube_auth` locally and refresh the `YOUTUBE_TOKEN_JSON` secret.
+  Any locally-refreshed YouTube token should be copied back into the same secret.
+
 ## Configuration reference
 
 | Variable | Default | Purpose |
@@ -471,6 +625,19 @@ shorts-cli --platform none "https://youtu.be/VIDEO_ID"
 | `DATABASE_PATH` | `work/jobs.db` | Local SQLite history |
 | `KEEP_WORK_FILES` | `true` | Keep the job folder (source video) after publishing |
 | `DELETE_UPLOADED_CLIPS` | `true` | Delete each clip MP4/thumbnail once it is published on every platform |
+| `SUBTITLES_ENABLED` | `true` | Burn word-synced karaoke captions into every clip |
+| `SUBTITLES_WORDS_PER_SCREEN` | `4` | Words per caption line (1–8) |
+| `SUBTITLES_FONT_SIZE` | `62` | Caption size on the 1080×1920 canvas (24–140) |
+| `SUBTITLES_POSITION_Y` | `850` | Caption center height on the 1080×1920 canvas |
+| `SUBTITLES_FONT_NAME` | `Anton` | Caption family; falls back to bundled DejaVu Sans Bold |
+| `SUBTITLES_FONT_DIR` | `fonts` | Extra font files for caption rendering |
+| `CHANNELS_FILE` | `channels.txt` | Channel list for automatic latest-video discovery |
+| `CHANNEL_SCAN_MAX_VIDEOS` | `5` | Newest uploads inspected per channel per scan (1–50) |
+| `CHANNEL_SCAN_INTERVAL_MINUTES` | `60` | How often the watcher re-scans channels (5–1440) |
+| `SCHEDULE_TIMEZONE` | system local | IANA timezone for upload schedules (e.g. `Asia/Kolkata`) |
+| `YOUTUBE_SCHEDULE_TIMES` | empty | Comma-separated local times; empty = upload immediately |
+| `INSTAGRAM_SCHEDULE_TIMES` | empty | Same, for Instagram Reels |
+| `FACEBOOK_SCHEDULE_TIMES` | empty | Same, for Facebook Page Reels |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
 ## Test locally

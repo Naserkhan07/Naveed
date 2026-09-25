@@ -5,7 +5,15 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .models import Job, JobClip, JobStatus, ShortPlan
+from .models import (
+    ChannelPlatform,
+    Job,
+    JobClip,
+    JobStatus,
+    ShortPlan,
+    platform_column,
+    platform_uploaded_at_column,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -55,6 +63,16 @@ CREATE TABLE IF NOT EXISTS job_clips (
     FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_job_clips_job ON job_clips(job_id, clip_index);
+
+CREATE TABLE IF NOT EXISTS channel_videos (
+    channel_key TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    queued_at TEXT,
+    job_id TEXT,
+    PRIMARY KEY (channel_key, video_id)
+);
 """
 
 _MIGRATION_COLUMNS = {
@@ -71,6 +89,9 @@ _CLIP_MIGRATION_COLUMNS = {
     "enhancement_complete": "INTEGER NOT NULL DEFAULT 0",
     "facebook_video_id": "TEXT",
     "facebook_url": "TEXT",
+    "youtube_uploaded_at": "TEXT",
+    "instagram_uploaded_at": "TEXT",
+    "facebook_uploaded_at": "TEXT",
 }
 
 
@@ -118,7 +139,7 @@ class JobRepository:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(UTC).isoformat(timespec="seconds")
+        return datetime.now(UTC).isoformat(timespec="microseconds")
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> Job:
@@ -294,6 +315,9 @@ class JobRepository:
             "instagram_url",
             "facebook_video_id",
             "facebook_url",
+            "youtube_uploaded_at",
+            "instagram_uploaded_at",
+            "facebook_uploaded_at",
             "error",
         }
         unknown = fields.keys() - allowed
@@ -436,6 +460,71 @@ class JobRepository:
                 (current["created_at"], current["created_at"], job_id, job_id, clip_index),
             ).fetchone()
         return int(row["preceding"])
+
+    def filter_unseen_channel_videos(self, channel_key: str, video_ids: list[str]) -> set[str]:
+        """Video IDs from the list that were never queued for this channel."""
+        if not video_ids:
+            return set()
+        placeholders = ", ".join("?" for _ in video_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT video_id FROM channel_videos WHERE channel_key = ? "
+                f"AND video_id IN ({placeholders})",
+                (channel_key, *video_ids),
+            ).fetchall()
+        seen = {str(row["video_id"]) for row in rows}
+        return {video_id for video_id in video_ids if video_id not in seen}
+
+    def mark_channel_video_queued(
+        self,
+        channel_key: str,
+        video_id: str,
+        url: str,
+        title: str,
+        job_id: str | None = None,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO channel_videos (channel_key, video_id, url, title, queued_at, job_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (channel_key, video_id) DO UPDATE SET
+                    queued_at = COALESCE(channel_videos.queued_at, excluded.queued_at),
+                    job_id = COALESCE(channel_videos.job_id, excluded.job_id)
+                """,
+                (channel_key, video_id, url, title, self._now(), job_id),
+            )
+
+    def count_platform_uploads_since(self, platform: ChannelPlatform, since_iso: str) -> int:
+        """How many clips were uploaded to a platform at/after an ISO timestamp (UTC)."""
+        column = platform_uploaded_at_column(platform)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS uploads FROM job_clips WHERE {column} IS NOT NULL "
+                f"AND {column} >= ?",
+                (since_iso,),
+            ).fetchone()
+        return int(row["uploads"])
+
+    def next_pending_clip(self, platform: ChannelPlatform) -> JobClip | None:
+        """Oldest rendered clip that still lacks an upload to the given platform."""
+        column = platform_column(platform)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT job_clips.*
+                FROM job_clips
+                JOIN jobs ON jobs.id = job_clips.job_id
+                WHERE job_clips.{column} IS NULL
+                  AND job_clips.output_path IS NOT NULL
+                  AND job_clips.metadata_ready = 1
+                  AND jobs.status != ?
+                ORDER BY jobs.created_at, job_clips.job_id, job_clips.clip_index
+                LIMIT 1
+                """,
+                (JobStatus.FAILED.value,),
+            ).fetchone()
+        return self._clip_from_row(row) if row else None
 
     def fail_interrupted(self) -> int:
         running = (

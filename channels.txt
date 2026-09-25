@@ -1,0 +1,10 @@
+# Automatic channel discovery.
+# One channel per line: @handle, full channel URL, or UC... channel ID.
+# The bot checks these channels on every scan and queues their NEW uploads
+# automatically (each video is processed exactly once).
+#
+# Only add channels you own or have explicit permission/license to repurpose.
+# Examples:
+# @YourChannel
+# https://www.youtube.com/@YourChannel
+# UCxxxxxxxxxxxxxxxxxxxxxx
