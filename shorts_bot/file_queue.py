@@ -18,6 +18,7 @@ from .errors import ConfigurationError, WorkflowError
 from .hotclip import scan_export_dir
 from .models import ChannelPlatform
 from .publisher import Publisher
+from .readiness import ready_buffer_occupancy
 from .status_panel import start_status_panel
 
 logger = logging.getLogger(__name__)
@@ -267,16 +268,39 @@ async def run_file_queue(
     async def process_channels() -> bool:
         if not settings.channels_file.exists():
             return False
+
+        occupancy = ready_buffer_occupancy(settings, repository)
+        target = settings.ready_clip_buffer_target
+        if occupancy >= target:
+            print(
+                f"[channels] ready buffer target reached ({occupancy}/{target}); "
+                "skipping source discovery",
+                flush=True,
+            )
+            return False
+
+        print(
+            f"[channels] looking for unseen uploads from the last "
+            f"{settings.channel_fallback_lookback_days} days "
+            f"(buffer {occupancy}/{target})",
+            flush=True,
+        )
         new_videos, errors = await asyncio.to_thread(
             discover_new_videos,
             settings.channels_file,
             repository,
             settings.channel_scan_max_videos,
+            settings.channel_fallback_lookback_days,
         )
         for message in errors:
             print(message, file=sys.stderr, flush=True)
+
+        source_limit = min(
+            settings.channel_max_sources_per_scan,
+            max(0, target - occupancy),
+        )
         processed = False
-        for video in new_videos:
+        for video in new_videos[:source_limit]:
             if video.url in failures:
                 continue
             processed = True
@@ -326,13 +350,15 @@ async def run_file_queue(
     while True:
         state_safely(repository, "heartbeat", heartbeat_timestamp())
         try:
+            # Service content already on the queue before potentially slow
+            # source downloads; newly clipped work is ready for the next tick.
+            if "intake" in stages or "publish" in stages:
+                await intake_and_publish()
             if "download" in stages:
                 await process_links()
             if "channels" in stages and channel_scan_due():
                 await process_channels()
                 mark_channel_scanned()
-            if "intake" in stages or "publish" in stages:
-                await intake_and_publish()
         except ConfigurationError as exc:
             print(f"Configuration problem: {exc}", file=sys.stderr, flush=True)
             if not watch:

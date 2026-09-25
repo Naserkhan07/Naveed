@@ -86,6 +86,8 @@ def test_build_status_reports_running_heartbeat_and_progress(tmp_path: Path) -> 
     status = build_status(settings, repository)
 
     assert status["watcher"]["running"] is True  # type: ignore[index]
+    assert status["config"]["ready_clip_count"] == 1  # type: ignore[index]
+    assert status["config"]["ready_buffer_target"] == settings.ready_clip_buffer_target  # type: ignore[index]
     youtube = _platform(status, "YouTube")
     assert youtube["uploads_today"] == 1
     assert youtube["owed_now"] == 2
@@ -144,6 +146,7 @@ def test_pages_export_writes_static_dashboard(tmp_path: Path) -> None:
 
     assert index.name == "index.html"
     assert "Shorts Autopilot" in index.read_text(encoding="utf-8")
+    assert "Ready before the next slot" in index.read_text(encoding="utf-8")
     payload = json.loads(
         (tmp_path / "site" / "api" / "status.json").read_text(encoding="utf-8")
     )

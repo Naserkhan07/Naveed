@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shorts_bot.channels import (
     ChannelSpec,
     ChannelVideo,
     _normalize_channel,
+    _published_at,
     discover_new_videos,
     latest_channel_videos,
     read_channels,
@@ -18,6 +20,15 @@ class FakeRepository:
 
     def filter_unseen_channel_videos(self, channel_key: str, video_ids: list[str]) -> set[str]:
         return {video_id for video_id in video_ids if video_id not in self.seen}
+
+
+def test_published_at_parses_relative_labels_conservatively() -> None:
+    recent = _published_at({"published_time_text": "3 days ago"})
+    stale = _published_at({"publishedTimeText": "4 days ago"})
+    now = datetime.now(UTC)
+
+    assert recent is not None and 3.9 <= (now - recent).total_seconds() / 86_400 <= 4.1
+    assert stale is not None and 4.9 <= (now - stale).total_seconds() / 86_400 <= 5.1
 
 
 def test_normalize_handle() -> None:
@@ -74,10 +85,12 @@ def test_read_channels_missing_file(tmp_path: Path) -> None:
     assert read_channels(tmp_path / "nope.txt") == []
 
 
-def _fake_ydl(entries):
+def _fake_ydl(entries, captured_options=None):
     class FakeYoutubeDL:
         def __init__(self, options):  # noqa: ANN001
             self.options = options
+            if captured_options is not None:
+                captured_options.update(options)
 
         def __enter__(self):  # noqa: ANN204
             return self
@@ -99,8 +112,8 @@ def test_latest_channel_videos(monkeypatch) -> None:  # noqa: ANN001
         "YoutubeDL",
         _fake_ydl(
             [
-                {"id": "abc123", "title": "Newest"},
-                {"id": "def456", "title": "Older"},
+                {"id": "abc123", "title": "Newest", "upload_date": "20260925"},
+                {"id": "def456", "title": "Older", "upload_date": "20260924"},
                 None,
                 {"id": "", "title": "broken"},
             ]
@@ -113,17 +126,57 @@ def test_latest_channel_videos(monkeypatch) -> None:  # noqa: ANN001
     assert all(v.channel_key == "k" for v in videos)
 
 
-def test_discover_new_videos_filters_seen_and_reverses(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+def test_latest_channel_videos_requests_relative_upload_timestamps(monkeypatch) -> None:  # noqa: ANN001
     import yt_dlp
 
+    captured_options: dict[str, object] = {}
+    monkeypatch.setattr(
+        yt_dlp,
+        "YoutubeDL",
+        _fake_ydl(
+            [{"id": "abc123", "title": "Recent", "timestamp": 1_750_000_000}],
+            captured_options,
+        ),
+    )
+    spec = ChannelSpec(key="k", videos_url="https://www.youtube.com/@x/videos")
+
+    (video,) = latest_channel_videos(spec)
+
+    assert video.published_at is not None
+    assert video.published_at_approximate is True
+    assert captured_options["extractor_args"] == {"youtubetab": {"approximate_date": ["true"]}}
+
+
+def test_discover_new_videos_filters_seen_and_out_of_window(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    import yt_dlp
+
+    now = datetime.now(UTC)
     monkeypatch.setattr(
         yt_dlp,
         "YoutubeDL",
         _fake_ydl(
             [
-                {"id": "newest", "title": "Newest"},
-                {"id": "seen", "title": "Seen"},
-                {"id": "newest-first", "title": "Oldest new"},
+                {
+                    "id": "newest",
+                    "title": "Newest",
+                    "timestamp": (now - timedelta(hours=1)).timestamp(),
+                },
+                {
+                    "id": "seen",
+                    "title": "Seen",
+                    "timestamp": (now - timedelta(hours=2)).timestamp(),
+                },
+                {
+                    "id": "outside",
+                    "title": "Too old",
+                    "timestamp": (now - timedelta(days=5)).timestamp(),
+                },
+                {
+                    "id": "oldest-new",
+                    "title": "Oldest new",
+                    "timestamp": (now - timedelta(hours=3)).timestamp(),
+                },
+                {"id": "undated", "title": "Unknown date"},
             ]
         ),
     )
@@ -132,11 +185,95 @@ def test_discover_new_videos_filters_seen_and_reverses(monkeypatch, tmp_path: Pa
     new_videos, errors = discover_new_videos(
         channels_file,
         FakeRepository(seen={"seen"}),
-        max_videos=3,
+        max_videos=5,
+        lookback_days=4,
     )
     assert errors == []
-    # Oldest unseen first so the queue processes uploads in order.
-    assert [v.video_id for v in new_videos] == ["newest-first", "newest"]
+    # Oldest unseen within the 4-day window first; seen, stale, and undated are skipped.
+    assert [v.video_id for v in new_videos] == ["oldest-new", "newest"]
+
+
+def test_discover_new_videos_excludes_approximate_four_day_boundary(
+    monkeypatch, tmp_path: Path
+) -> None:  # noqa: ANN001
+    from shorts_bot import channels
+
+    channels_file = tmp_path / "channels.txt"
+    channels_file.write_text("@one\n", encoding="utf-8")
+    now = datetime.now(UTC)
+
+    def fake_latest(spec: ChannelSpec, max_videos: int) -> list[ChannelVideo]:
+        del max_videos
+        return [
+            ChannelVideo(
+                spec.key,
+                "approx-boundary",
+                "https://youtu.be/approx-boundary",
+                "Approximate boundary",
+                now - timedelta(days=4) + timedelta(minutes=2),
+                True,
+            ),
+            ChannelVideo(
+                spec.key,
+                "recent-approx",
+                "https://youtu.be/recent-approx",
+                "Recent approximate",
+                now - timedelta(days=3),
+                True,
+            ),
+            ChannelVideo(
+                spec.key,
+                "recent-exact",
+                "https://youtu.be/recent-exact",
+                "Recent exact",
+                now - timedelta(days=4) + timedelta(minutes=2),
+            ),
+        ]
+
+    monkeypatch.setattr(channels, "latest_channel_videos", fake_latest)
+    new_videos, errors = discover_new_videos(channels_file, FakeRepository(set()))
+
+    assert errors == []
+    assert [video.video_id for video in new_videos] == ["recent-exact", "recent-approx"]
+
+
+def test_discover_new_videos_round_robins_channels(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    from shorts_bot import channels
+
+    channels_file = tmp_path / "channels.txt"
+    channels_file.write_text("@one\n@two\n", encoding="utf-8")
+    now = datetime.now(UTC)
+    dates = {
+        "one-old": now - timedelta(hours=3),
+        "one-new": now - timedelta(hours=1),
+        "two-old": now - timedelta(hours=2),
+        "two-new": now - timedelta(minutes=30),
+    }
+
+    def fake_latest(spec: ChannelSpec, max_videos: int) -> list[ChannelVideo]:
+        del max_videos
+        ids = ("one-old", "one-new") if "@one" in spec.key else ("two-old", "two-new")
+        return [
+            ChannelVideo(
+                spec.key,
+                video_id,
+                f"https://youtu.be/{video_id}",
+                video_id,
+                dates[video_id],
+            )
+            for video_id in ids
+        ]
+
+    monkeypatch.setattr(channels, "latest_channel_videos", fake_latest)
+    new_videos, errors = discover_new_videos(channels_file, FakeRepository(set()))
+
+    assert errors == []
+    assert [video.video_id for video in new_videos] == [
+        "one-old",
+        "two-old",
+        "one-new",
+        "two-new",
+    ]
 
 
 def test_discover_new_videos_collects_errors(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001

@@ -12,6 +12,7 @@ from .errors import ConfigurationError
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
+YOUTUBE_DEFAULT_DAILY_INSERT_LIMIT = 100
 _SUPPORTED_COOKIE_BROWSERS = {
     "brave",
     "chrome",
@@ -102,6 +103,9 @@ class Settings:
     channels_file: Path
     channel_scan_max_videos: int
     channel_scan_interval_minutes: int
+    channel_fallback_lookback_days: int
+    channel_max_sources_per_scan: int
+    ready_clip_buffer_target: int
     schedule_timezone: str
     youtube_schedule_times: str
     instagram_schedule_times: str
@@ -190,8 +194,11 @@ class Settings:
             ).expanduser(),
             hotclip_min_clip_age_seconds=_int_env("HOTCLIP_MIN_CLIP_AGE_SECONDS", 90),
             channels_file=Path(os.getenv("CHANNELS_FILE", "channels.txt")).expanduser(),
-            channel_scan_max_videos=_int_env("CHANNEL_SCAN_MAX_VIDEOS", 5),
+            channel_scan_max_videos=_int_env("CHANNEL_SCAN_MAX_VIDEOS", 50),
             channel_scan_interval_minutes=_int_env("CHANNEL_SCAN_INTERVAL_MINUTES", 60),
+            channel_fallback_lookback_days=_int_env("CHANNEL_FALLBACK_LOOKBACK_DAYS", 4),
+            channel_max_sources_per_scan=_int_env("CHANNEL_MAX_SOURCES_PER_SCAN", 5),
+            ready_clip_buffer_target=_int_env("READY_CLIP_BUFFER_TARGET", 99),
             schedule_timezone=os.getenv("SCHEDULE_TIMEZONE", "").strip(),
             youtube_schedule_times=os.getenv("YOUTUBE_SCHEDULE_TIMES", "").strip(),
             instagram_schedule_times=os.getenv("INSTAGRAM_SCHEDULE_TIMES", "").strip(),
@@ -276,6 +283,12 @@ class Settings:
             raise ConfigurationError(
                 "CHANNEL_SCAN_INTERVAL_MINUTES must be between 5 and 1440."
             )
+        if not 1 <= self.channel_fallback_lookback_days <= 30:
+            raise ConfigurationError("CHANNEL_FALLBACK_LOOKBACK_DAYS must be between 1 and 30.")
+        if not 1 <= self.channel_max_sources_per_scan <= 50:
+            raise ConfigurationError("CHANNEL_MAX_SOURCES_PER_SCAN must be between 1 and 50.")
+        if not 1 <= self.ready_clip_buffer_target <= 500:
+            raise ConfigurationError("READY_CLIP_BUFFER_TARGET must be between 1 and 500.")
         for name, value in (
             ("YOUTUBE_UPLOADS_PER_SLOT", self.youtube_uploads_per_slot),
             ("INSTAGRAM_UPLOADS_PER_SLOT", self.instagram_uploads_per_slot),
@@ -402,16 +415,16 @@ class Settings:
         warnings: list[str] = []
         if self.upload_youtube and self.youtube_schedule_times:
             schedule = parse_schedule_spec(self.youtube_schedule_times)
-            weekly_slots = sum(len(times) for times in schedule.values())
-            days_with_slots = sum(1 for times in schedule.values() if times)
-            per_week = weekly_slots * self.youtube_uploads_per_slot
-            daily_average = per_week / 7 if days_with_slots else 0
-            if daily_average > 6:
+            max_daily_uploads = max(
+                (len(times) * self.youtube_uploads_per_slot for times in schedule.values()),
+                default=0,
+            )
+            if max_daily_uploads > YOUTUBE_DEFAULT_DAILY_INSERT_LIMIT:
                 warnings.append(
-                    f"YouTube is configured for up to {daily_average:g} uploads/day. The default "
-                    "YouTube Data API quota (10,000 units) fits only ~6/day; extra uploads will "
-                    "fail with quota errors and catch up on later days. Request a quota "
-                    "increase in Google Cloud Console to sustain this volume."
+                    f"YouTube is configured for up to {max_daily_uploads} uploads/day, above "
+                    "the default YouTube Data API videos.insert bucket of "
+                    f"{YOUTUBE_DEFAULT_DAILY_INSERT_LIMIT} calls/day. The channel's own daily "
+                    "upload limit may be lower and varies by channel; excess uploads remain queued."
                 )
         return warnings
 
