@@ -158,7 +158,8 @@ tick publishes within ~30s of each slot. Windows Task Scheduler/macOS cron can i
 
 The watcher always serves a live localhost dashboard (no setup, no extra install). While
 `main.py` runs, open **http://localhost:8000** in any browser and it auto-refreshes every
-5 seconds:
+5 seconds. Running fully on GitHub instead? The same dashboard is published online — see
+section 9.
 
 - **RUNNING / STALE badge** — driven by the watcher's database heartbeat; if the bot ever
   stops ticking the badge turns red, plus "last tick … ago" and uptime.
@@ -225,37 +226,54 @@ automatically — from the first tag down, as many as the platform accepts:
   `HASHTAGS_YOUTUBE_MAX`/`HASHTAGS_INSTAGRAM_MAX`/`HASHTAGS_FACEBOOK_MAX`
   (0 = unlimited; values above a platform's real cap are rejected on startup).
 
-## 9. Run it on GitHub Actions (cloud autopilot)
+## 9. Run everything on GitHub — no local PC needed
 
-[`.github/workflows/autopilot.yml`](.github/workflows/autopilot.yml) runs the whole
-loop on GitHub every hour (plus on demand): test → harvest new channel uploads →
-clip them with HotClip's headless CLI → publish exactly what each platform's
-schedule owes. The SQLite queue, watch folder, exports, and HotClip itself persist
-between runs via GitHub's cache, and cron delays are absorbed by the catch-up
-credit system — a late run just publishes what is owed.
+The autopilot lives entirely on GitHub: **nothing runs on your computer, ever**, and it
+never stops. It wakes on its own every 15 minutes (plus on every push to `main` and
+whenever you press "Run workflow"), does harvest → HotClip cloud clipping → scheduled
+publishing, and goes back to sleep until the next tick. State (queue DB, watch folder,
+exports, HotClip itself) persists between runs via GitHub caches, and a tiny monthly
+keepalive commit on the `autopilot-keepalive` branch stops GitHub from disabling
+scheduled runs after 60 days of repo inactivity.
 
-One-time setup in the repo's **Settings → Secrets and variables → Actions**:
+> Honest mechanics: GitHub schedulers are interval-based, not a literal 24/7 process,
+> and cron can run late. That's harmless here — the credit system publishes what is
+> owed whenever a run happens — so "always running" in practice means "it fires all
+> day, every day, forever, and catches up exactly".
 
-| Secret | Content |
-|---|---|
-| `YOUTUBE_TOKEN_JSON` | Contents of your local `youtube_token.json` (run `python -m shorts_bot.youtube_auth` once locally) |
-| `INSTAGRAM_USER_ID` | Numeric Instagram professional account ID |
-| `INSTAGRAM_ACCESS_TOKEN` | Long-lived Meta token |
-| `FACEBOOK_PAGE_ID` | Numeric Page ID |
-| `FACEBOOK_ACCESS_TOKEN` | Long-lived Page token (or reuse the Instagram token) |
-| `YTDLP_COOKIES_TXT` | *(optional)* Netscape-format YouTube cookies — runners are datacenter IPs, and YouTube sometimes demands "confirm you're not a bot" without cookies |
+### Your dashboard is always online — no localhost needed
 
-- Schedules, timezone, and per-slot volumes live in the workflow's `env:` block
-  (edit them there like `.env`); the hashtag engine reads the committed
-  `hashtags.txt`.
-- `HOTCLIP_CLOUD: "true"` in the workflow env enables **experimental** cloud clipping
-  (HotClip AGPL source is cloned at runtime — never vendored here — and driven via
-  `pnpm cli clip`). If it fails for any reason, the run still publishes the clip
-  backlog; set it to `"false"` if you clip on your own PC instead and push exports
-  some other way.
-- GitHub schedules run in UTC and can be delayed; because publishing is credit-based,
-  nothing is ever lost, only late. Meta long-lived tokens still expire ~60 days —
-  refresh them like before.
+Every run rebuilds the same status panel as a **public GitHub Pages site**:
+open **https://Naserkhan07.github.io/Naveed/** from anywhere (phone included) and you
+get the identical dashboard — RUNNING/STALE badge, per-platform progress, the "what,
+when, where" activity feed with links, and the queue — refreshed automatically after
+every run (the header shows "data from … ago"). The page is static and public like the
+repo: it never contains tokens or secrets, only clip titles, progress, and post links.
+
+### One-time setup (~3 minutes, all in the GitHub web UI)
+
+1. **Merge the PR** so `main` has the code.
+2. **Add the workflow file**: repo → **Add file → Upload files** → upload
+   `.github/workflows/autopilot.yml` onto `main` (the Arena GitHub App token isn't
+   allowed to push workflow files; GitHub schedules also only run from the default
+   branch — both solved by this one upload).
+3. **Settings → Pages** → "Build and deployment" → Source: **GitHub Actions**.
+4. **Settings → Secrets and variables → Actions** → add:
+   `YOUTUBE_TOKEN_JSON` (contents of your local `youtube_token.json`),
+   `INSTAGRAM_USER_ID`, `INSTAGRAM_ACCESS_TOKEN`, `FACEBOOK_PAGE_ID`,
+   `FACEBOOK_ACCESS_TOKEN` (optional `YTDLP_COOKIES_TXT` — runners are datacenter IPs
+   and YouTube may ask "confirm you're not a bot" without cookies).
+5. **Actions tab → Autopilot → Run workflow** once. The dashboard goes live at the
+   Pages URL on that first run; every 15-minute tick keeps everything moving.
+
+Schedules, timezone, and per-slot volumes live in the workflow's `env:` block (edit
+them like `.env`); `HOTCLIP_CLOUD: "true"` enables experimental cloud clipping via
+HotClip's headless CLI (AGPL source cloned at runtime, never vendored here — failures
+never block publishing the backlog). Meta long-lived tokens still expire ~60 days:
+refresh them like before.
+
+The local watcher path (sections 5–7) stays fully supported for anyone who prefers
+an always-on PC; the localhost panel and the Pages dashboard are the same page.
 
 ## Configuration reference
 
@@ -297,6 +315,7 @@ One-time setup in the repo's **Settings → Secrets and variables → Actions**:
 | `STATUS_PANEL_ENABLED` | `true` | Serve the live localhost dashboard with the watcher |
 | `STATUS_PANEL_HOST` | `127.0.0.1` | Dashboard bind address |
 | `STATUS_PANEL_PORT` | `8000` | Dashboard port (auto-increments if busy) |
+| `STATUS_STALE_AFTER_SECONDS` | `120` | Heartbeat age before the badge shows STALE |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
 ## Project layout
@@ -308,6 +327,7 @@ One-time setup in the repo's **Settings → Secrets and variables → Actions**:
 - `shorts_bot/hashtags.py` — per-platform hashtag block (caps, dedupe, char budgets)
 - `shorts_bot/status_panel.py` + `status_page.html` — the localhost dashboard
   (heartbeat badge, per-platform cards, activity feed, queue; `python -m shorts_bot.status_panel`)
+- `shorts_bot/pages_export.py` — exports the same dashboard statically for GitHub Pages
 - `shorts_bot/scheduler.py` — per-weekday schedule grammar and credit math
 - `shorts_bot/channels.py` — channel list parsing + yt-dlp latest-uploads discovery
 - `shorts_bot/downloader.py` — yt-dlp source downloads (best quality, retries, cookies)

@@ -150,7 +150,8 @@ function render(data) {
   const pill = $("bot-pill");
   pill.className = "pill " + (w.running ? "on" : "off");
   pill.textContent = w.running ? "● RUNNING" : "● STALE — watcher not ticking";
-  $("meta").textContent = `last tick ${ago(w.heartbeat_at)} · started ${ago(w.started_at)} · tz ${data.timezone}`;
+  $("meta").textContent = `last tick ${ago(w.heartbeat_at)} · started ${ago(w.started_at)}` +
+    ` · data from ${ago(data.generated_at)} · tz ${data.timezone}`;
   $("clock").textContent = `local ${data.local_time} ${data.timezone}`;
   renderPlatforms(data.platforms);
   renderFeed(data.events);
@@ -163,11 +164,18 @@ function render(data) {
     `channel scan every ${c.scan_interval_minutes}m · auto-refresh 5s`;
 }
 
+async function fetchStatus() {
+  for (const url of ["api/status.json", "/api/status"]) {
+    try {
+      const r = await fetch(url, {cache: "no-store"});
+      if (r.ok) return await r.json();
+    } catch (e) { /* try next endpoint */ }
+  }
+  throw new Error("no status endpoint");
+}
 async function tick() {
   try {
-    const r = await fetch("/api/status", {cache: "no-store"});
-    if (!r.ok) throw new Error("http " + r.status);
-    render(await r.json());
+    render(await fetchStatus());
   } catch (e) {
     const pill = $("bot-pill");
     pill.className = "pill off";

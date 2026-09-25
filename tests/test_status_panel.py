@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,12 +12,14 @@ import pytest
 from shorts_bot.config import Settings
 from shorts_bot.db import JobRepository, heartbeat_timestamp
 from shorts_bot.models import ChannelPlatform
+from shorts_bot.pages_export import export_pages_site
 from shorts_bot.status_panel import StatusPanel, build_status
 
 _PANEL_ENV = (
     "STATUS_PANEL_ENABLED",
     "STATUS_PANEL_HOST",
     "STATUS_PANEL_PORT",
+    "STATUS_STALE_AFTER_SECONDS",
 )
 
 
@@ -118,6 +120,40 @@ def test_platform_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.status_panel_enabled is True
     assert settings.status_panel_host == "127.0.0.1"
     assert settings.status_panel_port == 8000
+    assert settings.status_stale_after_seconds == 120
+
+
+def test_stale_threshold_respects_cloud_runs(tmp_path: Path) -> None:
+    old_heartbeat = (datetime.now(UTC) - timedelta(minutes=30)).isoformat(timespec="seconds")
+
+    settings = _settings(tmp_path)
+    repository = JobRepository(settings.database_path)
+    repository.set_state("heartbeat", old_heartbeat)
+    assert build_status(settings, repository)["watcher"]["running"] is False  # type: ignore[index]
+
+    cloud = _settings(tmp_path, status_stale_after_seconds=2700)
+    assert build_status(cloud, repository)["watcher"]["running"] is True  # type: ignore[index]
+
+
+def test_pages_export_writes_static_dashboard(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    repository = _seed_repository(tmp_path, settings)
+    repository.set_state("heartbeat", heartbeat_timestamp())
+
+    index = export_pages_site(settings, repository, tmp_path / "site")
+
+    assert index.name == "index.html"
+    assert "Shorts Autopilot" in index.read_text(encoding="utf-8")
+    payload = json.loads(
+        (tmp_path / "site" / "api" / "status.json").read_text(encoding="utf-8")
+    )
+    assert payload["queue"][0]["title"] == "Clip A"
+    assert payload["watcher"]["running"] is True
+    assert [platform["name"] for platform in payload["platforms"]] == [
+        "YouTube",
+        "Instagram",
+        "Facebook",
+    ]
 
 
 def _http_get(url: str) -> tuple[int, bytes]:
@@ -147,6 +183,9 @@ def test_http_server_serves_dashboard_json_and_health(tmp_path: Path) -> None:
         status, body = _http_get(f"{base}/api/status")
         assert status == 200
         payload = json.loads(body)
+        alias_status, alias_body = _http_get(f"{base}/api/status.json")
+        assert alias_status == 200
+        assert json.loads(alias_body)["platforms"]
         assert {entry["name"] for entry in payload["platforms"]} == {
             "YouTube",
             "Instagram",

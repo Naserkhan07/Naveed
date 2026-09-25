@@ -6,9 +6,8 @@ import logging
 import os
 import re
 import sys
-import time
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .channels import discover_new_videos
@@ -231,7 +230,25 @@ async def run_file_queue(
             log_safely(repository, "system", "Watcher started (status panel unavailable)")
 
     failures: set[str] = set()
-    next_channel_scan = time.monotonic()
+
+    def channel_scan_due() -> bool:
+        """True once CHANNEL_SCAN_INTERVAL_MINUTES passed since the last scan.
+
+        The timestamp lives in the database so restarts (and separate cloud
+        runs) keep honouring the interval instead of scanning every tick.
+        """
+        raw = repository.get_state("last_channel_scan")
+        if not raw:
+            return True
+        try:
+            last = datetime.fromisoformat(raw)
+        except ValueError:
+            return True
+        interval = timedelta(minutes=settings.channel_scan_interval_minutes)
+        return datetime.now(UTC) - last >= interval
+
+    def mark_channel_scanned() -> None:
+        state_safely(repository, "last_channel_scan", heartbeat_timestamp())
 
     async def process_links() -> bool:
         processed = False
@@ -303,6 +320,7 @@ async def run_file_queue(
 
     if scan_only:
         await process_channels()
+        mark_channel_scanned()
         return 1 if failures else 0
 
     while True:
@@ -310,11 +328,9 @@ async def run_file_queue(
         try:
             if "download" in stages:
                 await process_links()
-            if "channels" in stages and time.monotonic() >= next_channel_scan:
+            if "channels" in stages and channel_scan_due():
                 await process_channels()
-                next_channel_scan = (
-                    time.monotonic() + settings.channel_scan_interval_minutes * 60
-                )
+                mark_channel_scanned()
             if "intake" in stages or "publish" in stages:
                 await intake_and_publish()
         except ConfigurationError as exc:

@@ -124,6 +124,7 @@ class Settings:
     status_panel_enabled: bool
     status_panel_host: str
     status_panel_port: int
+    status_stale_after_seconds: int
 
     @classmethod
     def from_env(
@@ -216,6 +217,7 @@ class Settings:
             status_panel_host=os.getenv("STATUS_PANEL_HOST", "127.0.0.1").strip()
             or "127.0.0.1",
             status_panel_port=_int_env("STATUS_PANEL_PORT", 8000),
+            status_stale_after_seconds=_int_env("STATUS_STALE_AFTER_SECONDS", 120),
         )
         settings.validate_common()
         return settings
@@ -322,6 +324,10 @@ class Settings:
             )
         if not 1 <= self.status_panel_port <= 65_535:
             raise ConfigurationError("STATUS_PANEL_PORT must be between 1 and 65535.")
+        if not 30 <= self.status_stale_after_seconds <= 86_400:
+            raise ConfigurationError(
+                "STATUS_STALE_AFTER_SECONDS must be between 30 and 86400."
+            )
         if (
             self.ytdlp_cookies_from_browser
             and self.ytdlp_cookies_from_browser not in _SUPPORTED_COOKIE_BROWSERS

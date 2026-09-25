@@ -45,7 +45,7 @@ from .scheduler import (
 
 logger = logging.getLogger(__name__)
 
-_HEARTBEAT_STALE_SECONDS = 120  # 4x the default 30s watcher tick
+_HEARTBEAT_STALE_SECONDS = 120  # default; STATUS_STALE_AFTER_SECONDS overrides
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _QUEUE_LIMIT = 25
 _EVENT_LIMIT = 120
@@ -195,7 +195,11 @@ def build_status(settings: Settings, repository: JobRepository) -> dict[str, obj
             )
         except ValueError:
             heartbeat_age = None
-    stale_after = max(_HEARTBEAT_STALE_SECONDS, 3 * settings.links_poll_seconds)
+    stale_after = max(
+        settings.status_stale_after_seconds,
+        _HEARTBEAT_STALE_SECONDS,
+        3 * settings.links_poll_seconds,
+    )
     running = heartbeat_age is not None and heartbeat_age <= stale_after
 
     schedules = _settings_schedules(settings)
@@ -284,7 +288,9 @@ class _StatusHandler(BaseHTTPRequestHandler):
         try:
             if route in ("/", "/index.html"):
                 self._respond("text/html; charset=utf-8", _INDEX_HTML.encode("utf-8"))
-            elif route == "/api/status":
+            elif route in ("/api/status", "/api/status.json"):
+                # The .json alias lets the same page work both live (localhost)
+                # and as a static GitHub Pages export.
                 payload = json.dumps(build_status(self.panel.settings, self.panel.repository))
                 self._respond("application/json; charset=utf-8", payload.encode("utf-8"))
             elif route == "/healthz":
