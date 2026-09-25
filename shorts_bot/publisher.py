@@ -22,6 +22,7 @@ from .config import Settings
 from .db import JobRepository
 from .errors import UploadError, UploadLimitError, WorkflowError
 from .facebook import FacebookReelUploader
+from .hashtags import plan_with_hashtags
 from .instagram import InstagramUploader
 from .media import MediaProcessor
 from .models import ChannelPlatform, Publication
@@ -127,7 +128,7 @@ class Publisher:
                 f"Clip file is missing: {mp4_path}. It was moved or deleted after queueing."
             )
         duration = self.media.probe_duration(mp4_path)
-        plan = publication.to_plan(duration)
+        plan = plan_with_hashtags(publication.to_plan(duration), platform, self.settings)
 
         if platform is ChannelPlatform.YOUTUBE:
             thumbnail = Path(publication.cover_path) if publication.cover_path else None

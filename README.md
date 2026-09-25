@@ -9,14 +9,15 @@ A fully automated Shorts/Reels pipeline with two halves:
 2. **This bot** is the discovery + distribution brain: it watches YouTube channels for new
    uploads, feeds them to HotClip, harvests the finished clips into a SQLite queue, and
    publishes them to **YouTube, Instagram, and Facebook at your own per-day times** with
-   configurable uploads per slot (e.g. 7 per YouTube slot, 10 per Instagram/Facebook slot).
+   configurable uploads per slot (2 per YouTube slot, 10 per Instagram/Facebook slot)
+   and a fixed hashtag block appended to every upload.
 
 ```
 channels.txt ──► download new uploads ──► hotclip-watch/  (HotClip 24/7 watch folder)
                                                      │  (transcribe → cut → 9:16 + captions
                                                      │   + cover + post copy, all local)
 hotclip-exports/ ──► intake scan ──► SQLite publication queue ──► scheduler
-                                                     │        YT 3 slots × 7 uploads
+                                                     │        YT 3 slots × 2 uploads
                                                      │        IG 2 slots × 10 uploads
                                                      │        FB 2 slots × 10 uploads
                                                      └──── catch-up for missed slots
@@ -155,7 +156,7 @@ tick publishes within ~30s of each slot. Windows Task Scheduler/macOS cron can i
 ```dotenv
 SCHEDULE_TIMEZONE=Asia/Kolkata
 YOUTUBE_SCHEDULE_TIMES=mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30
-YOUTUBE_UPLOADS_PER_SLOT=7
+YOUTUBE_UPLOADS_PER_SLOT=2
 INSTAGRAM_SCHEDULE_TIMES=mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30
 INSTAGRAM_UPLOADS_PER_SLOT=10
 FACEBOOK_SCHEDULE_TIMES=mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00
@@ -169,10 +170,64 @@ FACEBOOK_UPLOADS_PER_SLOT=10
   a restart or overnight catch-up, credits stay exact (a missed slot publishes double later,
   not zero).
 - Shipped defaults mirror your reference charts (slot time = middle of each suggested
-  window): YouTube 3 slots/day × 7, Instagram 2 slots/day × 10, Facebook 2 slots/day × 10.
+  window): YouTube 3 slots/day × **2 uploads** (= 6/day, matching the default YouTube API
+  quota of ~6 uploads/day), Instagram 2 slots/day × 10, Facebook 2 slots/day × 10.
 - If the queue runs dry, nothing is posted until HotClip produces more clips.
 
 A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake instead.
+
+## 7. Hashtags on every video
+
+Every upload gets the ordered block from [`hashtags.txt`](hashtags.txt) appended
+automatically — from the first tag down, as many as the platform accepts:
+
+| Platform | Where they land | How many |
+|---|---|---|
+| YouTube | end of the description | up to **59** (+ the `#Shorts` the uploader adds itself = YouTube's 60 cap — beyond 60 YouTube ignores *every* hashtag) |
+| Instagram | end of the caption | up to **30** (Instagram rejects captions with more) |
+| Facebook | end of the Reel description | **the whole list** (no platform cap) |
+
+- 207 tags ship in the box: 14 global reach tags, then every country A–Z.
+- Tags already present in a clip's HotClip copy are never duplicated, and the
+  existing copy always stays above the block ("from top till bottom").
+- Character limits trim only trailing tags; at least the first tag always ships.
+- Edit the file freely: only `#tokens` are read, everything else is a comment
+  (never write `#example` words in header lines — they'd become live tags).
+- Controls: `HASHTAGS_ENABLED` (default true), `HASHTAGS_FILE`,
+  `HASHTAGS_YOUTUBE_MAX`/`HASHTAGS_INSTAGRAM_MAX`/`HASHTAGS_FACEBOOK_MAX`
+  (0 = unlimited; values above a platform's real cap are rejected on startup).
+
+## 8. Run it on GitHub Actions (cloud autopilot)
+
+[`.github/workflows/autopilot.yml`](.github/workflows/autopilot.yml) runs the whole
+loop on GitHub every hour (plus on demand): test → harvest new channel uploads →
+clip them with HotClip's headless CLI → publish exactly what each platform's
+schedule owes. The SQLite queue, watch folder, exports, and HotClip itself persist
+between runs via GitHub's cache, and cron delays are absorbed by the catch-up
+credit system — a late run just publishes what is owed.
+
+One-time setup in the repo's **Settings → Secrets and variables → Actions**:
+
+| Secret | Content |
+|---|---|
+| `YOUTUBE_TOKEN_JSON` | Contents of your local `youtube_token.json` (run `python -m shorts_bot.youtube_auth` once locally) |
+| `INSTAGRAM_USER_ID` | Numeric Instagram professional account ID |
+| `INSTAGRAM_ACCESS_TOKEN` | Long-lived Meta token |
+| `FACEBOOK_PAGE_ID` | Numeric Page ID |
+| `FACEBOOK_ACCESS_TOKEN` | Long-lived Page token (or reuse the Instagram token) |
+| `YTDLP_COOKIES_TXT` | *(optional)* Netscape-format YouTube cookies — runners are datacenter IPs, and YouTube sometimes demands "confirm you're not a bot" without cookies |
+
+- Schedules, timezone, and per-slot volumes live in the workflow's `env:` block
+  (edit them there like `.env`); the hashtag engine reads the committed
+  `hashtags.txt`.
+- `HOTCLIP_CLOUD: "true"` in the workflow env enables **experimental** cloud clipping
+  (HotClip AGPL source is cloned at runtime — never vendored here — and driven via
+  `pnpm cli clip`). If it fails for any reason, the run still publishes the clip
+  backlog; set it to `"false"` if you clip on your own PC instead and push exports
+  some other way.
+- GitHub schedules run in UTC and can be delayed; because publishing is credit-based,
+  nothing is ever lost, only late. Meta long-lived tokens still expire ~60 days —
+  refresh them like before.
 
 ## Configuration reference
 
@@ -206,6 +261,11 @@ A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake
 | `YOUTUBE_DESCRIPTION_TARGET_CHARS` | `4200` | Max YouTube description length |
 | `INSTAGRAM_CAPTION_TARGET_CHARS` | `2000` | Max Instagram caption length |
 | `DELETE_UPLOADED_CLIPS` | `false` | Delete clip MP4 once published everywhere |
+| `HASHTAGS_ENABLED` | `true` | Append the required hashtag block to every upload |
+| `HASHTAGS_FILE` | `hashtags.txt` | Ordered hashtag list (only `#tokens` are read) |
+| `HASHTAGS_YOUTUBE_MAX` | `59` | YouTube hashtag budget (+1 uploader `#Shorts` = 60 cap) |
+| `HASHTAGS_INSTAGRAM_MAX` | `30` | Instagram's hard caption hashtag cap |
+| `HASHTAGS_FACEBOOK_MAX` | `0` | 0 = unlimited; Facebook gets the full list |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
 ## Project layout
@@ -214,6 +274,7 @@ A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake
 - `shorts_bot/file_queue.py` — discovery, HotClip delivery, intake, the watcher loop
 - `shorts_bot/hotclip.py` — export-dir scanner (mp4 + cover + `.post.txt` + `clips.json`)
 - `shorts_bot/publisher.py` — FIFO publishing with per-slot credits and Meta cooldowns
+- `shorts_bot/hashtags.py` — per-platform hashtag block (caps, dedupe, char budgets)
 - `shorts_bot/scheduler.py` — per-weekday schedule grammar and credit math
 - `shorts_bot/channels.py` — channel list parsing + yt-dlp latest-uploads discovery
 - `shorts_bot/downloader.py` — yt-dlp source downloads (best quality, retries, cookies)

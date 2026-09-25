@@ -11,6 +11,7 @@ import base64
 import os
 import re
 
+
 def decode_safe(safe_str: str) -> str:
     # Reverse b64 string, b64decode, then reverse restored string
     b64 = safe_str[::-1]
@@ -22,7 +23,7 @@ def restore_secrets():
         print("[-] .envexample not found.")
         return
 
-    with open(envexample_path, "r", encoding="utf-8") as f:
+    with open(envexample_path, encoding="utf-8") as f:
         content = f.read()
 
     env_match = re.search(r"SAFE_ENV=([A-Za-z0-9+/=]+)", content)

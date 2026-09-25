@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from shorts_bot.config import Settings
 from shorts_bot.db import JobRepository
-from shorts_bot.file_queue import HotClipCoordinator, LinkFileQueue, _safe_stem
+from shorts_bot.file_queue import (
+    HotClipCoordinator,
+    LinkFileQueue,
+    _safe_stem,
+    parse_stages,
+)
 from shorts_bot.models import SourceVideo
 
 WORK = "https://youtu.be/example"
@@ -113,3 +120,11 @@ async def test_intake_exports_enrolls_new_clips_once(tmp_path: Path) -> None:
 def test_safe_stem() -> None:
     assert _safe_stem("Hello, World!") == "Hello-World"
     assert _safe_stem("") == "video"
+
+
+def test_parse_stages_defaults_to_everything_and_validates() -> None:
+    assert parse_stages("") == frozenset({"download", "channels", "intake", "publish"})
+    assert parse_stages("download, publish") == frozenset({"download", "publish"})
+    assert parse_stages("DOWNLOAD") == frozenset({"download"})
+    with pytest.raises(ValueError, match="Unknown stage"):
+        parse_stages("download,nope")

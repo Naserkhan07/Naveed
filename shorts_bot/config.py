@@ -116,6 +116,11 @@ class Settings:
     links_file: Path
     downloaded_links_log: Path
     links_poll_seconds: int
+    hashtags_file: Path
+    hashtags_enabled: bool
+    hashtags_youtube_max: int
+    hashtags_instagram_max: int
+    hashtags_facebook_max: int
 
     @classmethod
     def from_env(
@@ -199,6 +204,11 @@ class Settings:
                 os.getenv("DOWNLOADED_LINKS_LOG", str(work_dir / "downloaded-links.log"))
             ).expanduser(),
             links_poll_seconds=_int_env("LINKS_POLL_SECONDS", 30),
+            hashtags_file=Path(os.getenv("HASHTAGS_FILE", "hashtags.txt")).expanduser(),
+            hashtags_enabled=_bool_env("HASHTAGS_ENABLED", True),
+            hashtags_youtube_max=_int_env("HASHTAGS_YOUTUBE_MAX", 59),
+            hashtags_instagram_max=_int_env("HASHTAGS_INSTAGRAM_MAX", 30),
+            hashtags_facebook_max=_int_env("HASHTAGS_FACEBOOK_MAX", 0),
         )
         settings.validate_common()
         return settings
@@ -287,12 +297,38 @@ class Settings:
                 raise ConfigurationError(f"{name}: {exc}") from exc
         if not 5 <= self.links_poll_seconds <= 3600:
             raise ConfigurationError("LINKS_POLL_SECONDS must be between 5 and 3600.")
+        for name, value in (
+            ("HASHTAGS_YOUTUBE_MAX", self.hashtags_youtube_max),
+            ("HASHTAGS_INSTAGRAM_MAX", self.hashtags_instagram_max),
+            ("HASHTAGS_FACEBOOK_MAX", self.hashtags_facebook_max),
+        ):
+            if not 0 <= value <= 500:
+                raise ConfigurationError(f"{name} must be between 0 and 500 (0 = unlimited).")
+        if self.hashtags_youtube_max > 59:
+            raise ConfigurationError(
+                "HASHTAGS_YOUTUBE_MAX above 59 makes YouTube ignore every hashtag "
+                "(the uploader adds #Shorts itself; 60 total is the API cap)."
+            )
+        if self.hashtags_instagram_max > 30:
+            raise ConfigurationError(
+                "HASHTAGS_INSTAGRAM_MAX above 30 makes Instagram reject the caption."
+            )
         if (
             self.ytdlp_cookies_from_browser
             and self.ytdlp_cookies_from_browser not in _SUPPORTED_COOKIE_BROWSERS
         ):
             supported = ", ".join(sorted(_SUPPORTED_COOKIE_BROWSERS))
             raise ConfigurationError(f"YTDLP_COOKIES_FROM_BROWSER must be one of: {supported}.")
+
+    def validate_harvest(self) -> None:
+        """Light gate for download/discovery-only stages (no platform creds needed)."""
+        if not self.rights_acknowledged:
+            raise ConfigurationError(
+                "Set RIGHTS_ACKNOWLEDGED=true only after confirming you own or "
+                "have permission to reuse every submitted video."
+            )
+        if self.ytdlp_cookie_file and not self.ytdlp_cookie_file.exists():
+            raise ConfigurationError(f"YTDLP_COOKIE_FILE was not found: {self.ytdlp_cookie_file}")
 
     def validate_queue(self) -> None:
         if not self.rights_acknowledged:

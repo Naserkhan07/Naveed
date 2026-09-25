@@ -30,6 +30,22 @@ _PLATFORMS = {
 
 _SAFE_NAME = re.compile(r"[^\w.-]+")
 
+_STAGES = ("download", "channels", "intake", "publish")
+
+
+def parse_stages(raw: str) -> frozenset[str]:
+    """Parse a comma-separated stage list; empty means every stage."""
+    parts = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not parts:
+        return frozenset(_STAGES)
+    unknown = sorted(parts.difference(_STAGES))
+    if unknown:
+        raise ValueError(
+            f"Unknown stage(s): {', '.join(unknown)}. "
+            f"Valid stages: {', '.join(_STAGES)}."
+        )
+    return frozenset(parts)
+
 
 def _safe_stem(value: str, fallback: str = "video") -> str:
     cleaned = _SAFE_NAME.sub("-", value).strip("-._")
@@ -160,11 +176,17 @@ async def run_file_queue(
     settings: Settings,
     watch: bool = True,
     scan_only: bool = False,
+    stages: frozenset[str] = frozenset(_STAGES),
 ) -> int:
-    settings.validate_queue()
+    publishing = bool(stages.intersection({"intake", "publish"}))
+    if publishing:
+        settings.validate_queue()
+        for warning in settings.quota_warnings():
+            print(f"Quota warning: {warning}", file=sys.stderr, flush=True)
+    else:
+        # Harvest-only runs need rights, not upload tokens.
+        settings.validate_harvest()
     settings.prepare_directories()
-    for warning in settings.quota_warnings():
-        print(f"Quota warning: {warning}", file=sys.stderr, flush=True)
 
     repository = JobRepository(settings.database_path)
     downloader = VideoDownloader(
@@ -233,7 +255,9 @@ async def run_file_queue(
         return processed
 
     async def intake_and_publish() -> None:
-        added = await coordinator.intake_exports()
+        added = 0
+        if "intake" in stages:
+            added = await coordinator.intake_exports()
         counts = repository.pending_publication_counts()
         total = sum(counts.values())
         if added or total:
@@ -242,9 +266,10 @@ async def run_file_queue(
                 + " | ".join(f"{name}: {count}" for name, count in counts.items()),
                 flush=True,
             )
-        await publisher.publish_all_due(
-            report=lambda message: print(f"[scheduler] {message}", flush=True)
-        )
+        if "publish" in stages:
+            await publisher.publish_all_due(
+                report=lambda message: print(f"[scheduler] {message}", flush=True)
+            )
 
     if scan_only:
         await process_channels()
@@ -252,13 +277,15 @@ async def run_file_queue(
 
     while True:
         try:
-            await process_links()
-            if time.monotonic() >= next_channel_scan:
+            if "download" in stages:
+                await process_links()
+            if "channels" in stages and time.monotonic() >= next_channel_scan:
                 await process_channels()
                 next_channel_scan = (
                     time.monotonic() + settings.channel_scan_interval_minutes * 60
                 )
-            await intake_and_publish()
+            if "intake" in stages or "publish" in stages:
+                await intake_and_publish()
         except ConfigurationError as exc:
             print(f"Configuration problem: {exc}", file=sys.stderr, flush=True)
             if not watch:
@@ -309,7 +336,24 @@ def main() -> None:
         action="store_true",
         help="Only scan channels.txt for new uploads and hand them to HotClip, then exit",
     )
+    parser.add_argument(
+        "--stages",
+        metavar="LIST",
+        default="",
+        help=(
+            "Comma-separated cycle stages for the watcher/--once modes "
+            f"({','.join(_STAGES)}). Default: all. Example: run "
+            "'--once --stages download,channels', clip in HotClip, then "
+            "'--once --stages intake,publish'."
+        ),
+    )
     args = parser.parse_args()
+    if args.stages and (args.publish or args.scan_channels):
+        parser.error("--stages only applies to the watcher/--once cycle modes.")
+    try:
+        stages = parse_stages(args.stages)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         settings = Settings.from_env()
         if args.publish:
@@ -322,6 +366,7 @@ def main() -> None:
                     settings,
                     watch=not args.once and not args.scan_channels,
                     scan_only=args.scan_channels,
+                    stages=stages,
                 )
             )
     except ConfigurationError as exc:
