@@ -20,6 +20,8 @@ import numpy as np
 
 from .hrr import HRRSpace
 
+_EPS = 1e-9
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 # Linguistic prior: surface forms of the same verb/word map to one concept.
@@ -97,6 +99,8 @@ class EmergingVocabulary:
         self.space = space
         self.words: dict[str, int] = {}
         self.vectors: list[np.ndarray] = []
+        self.order: list[str] = []          # index -> word, parallel to vectors
+        self._matrix_cache: np.ndarray | None = None
 
     def get(self, word: str) -> np.ndarray:
         w = normalize_word(word)
@@ -105,19 +109,31 @@ class EmergingVocabulary:
             idx = len(self.vectors)
             self.words[w] = idx
             self.vectors.append(self.space.random_vector())
+            self.order.append(w)
+            self._matrix_cache = None       # invalidate: the sensorium grew
         return self.vectors[idx]
 
     def has(self, word: str) -> bool:
         return normalize_word(word) in self.words
 
+    def _matrix(self) -> np.ndarray:
+        if self._matrix_cache is None:
+            self._matrix_cache = np.array(self.vectors)
+        return self._matrix_cache
+
     def nearest(self, v: np.ndarray) -> tuple[str | None, float]:
-        """Cleanup: decode an activation back to the closest known concept."""
-        best, best_score = None, -2.0
-        for w, idx in self.words.items():
-            score = HRRSpace.cosine(v, self.vectors[idx])
-            if score > best_score:
-                best, best_score = w, score
-        return best, best_score
+        """Cleanup: decode an activation to the closest known concept.
+        Vectorized over the whole vocabulary (one matmul) — this is what
+        makes large-scale inference fast."""
+        if not self.vectors:
+            return None, 0.0
+        M = self._matrix()
+        nv = np.linalg.norm(v)
+        if nv < _EPS:
+            return None, 0.0
+        sims = (M @ v) / (np.linalg.norm(M, axis=1) * nv + _EPS)
+        i = int(np.argmax(sims))
+        return self.order[i], float(sims[i])
 
     def __len__(self) -> int:
         return len(self.vectors)
@@ -125,7 +141,7 @@ class EmergingVocabulary:
     # -- serialization (part of the brain file) ---------------------------
 
     def state_dict(self) -> dict:
-        return {"words": list(self.words.keys()), "vectors": np.array(self.vectors)}
+        return {"words": list(self.order), "vectors": np.array(self.vectors)}
 
     @classmethod
     def from_state_dict(cls, space: HRRSpace, sd: dict) -> "EmergingVocabulary":
@@ -133,6 +149,7 @@ class EmergingVocabulary:
         for w, v in zip(sd["words"], sd["vectors"]):
             vocab.words[w] = len(vocab.vectors)
             vocab.vectors.append(np.asarray(v, dtype=float))
+            vocab.order.append(w)
         return vocab
 
 

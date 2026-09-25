@@ -96,6 +96,39 @@ class PredictiveNetwork:
         self.W2 += upd.dW2
         self.b2 += upd.db2
 
+    # -- structural growth -----------------------------------------------------
+
+    def add_neurons(self, delta: int, rng: np.random.Generator) -> int:
+        """Grow the hidden layer by `delta` neurons, WITHOUT disturbing
+        existing knowledge:
+
+        - W1 rows: fresh random projections (new feature detectors), so the
+          new neurons are immediately active on input;
+        - W2 columns: near-zero — the new neurons are *silent* on output at
+          birth, so everything already learned keeps its exact dynamics;
+        - gradient still reaches them (tiny W2 entries transport error), so
+          the very next experiences can wire them up.
+
+        Returns the new hidden-layer size. Existing weights are untouched.
+        """
+        delta = int(delta)
+        if delta <= 0:
+            return self.W1.shape[0]
+        dim = self.W1.shape[1]
+        new_rows = rng.normal(0.0, 0.5 / np.sqrt(dim), (delta, dim))
+        new_b1 = np.zeros(delta)
+        eps = 0.005 / np.sqrt(dim)
+        new_cols = rng.normal(0.0, eps, (self.W2.shape[0], delta))
+        self.W1 = np.vstack([self.W1, new_rows])
+        self.b1 = np.concatenate([self.b1, new_b1])
+        self.W2 = np.hstack([self.W2, new_cols])
+        self.k = min(self.k, self.W1.shape[0])
+        self.last_activation = None
+        return self.W1.shape[0]
+
+    def hidden_size(self) -> int:
+        return int(self.W1.shape[0])
+
     # -- bookkeeping -------------------------------------------------------------
 
     def named_parameters(self) -> dict[str, np.ndarray]:

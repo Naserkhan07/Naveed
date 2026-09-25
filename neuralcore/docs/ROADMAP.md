@@ -31,8 +31,14 @@ added, and how it is measured.
 - New knowledge learned (D = 1.00) while old knowledge retained
   (A: +8.3% forgetting vs naive +25.0% under compression).
 - Adaptive plasticity: importance re-measured per block; sleep relaxes it.
+- Structural growth: capacity pressure (new-block failure OR old-knowledge
+  decay, checked mid-block) grows new silent neurons — the brain file grows
+  with knowledge (`neuralcore/growth.py`, `python3 -m neuralcore.grow`):
+  1.46 MB -> 6.34 MB (4.3x) while streaming 1,344 facts, retention 0.79.
+- Scaling law: HRR dim is the address space — thousands of bindings need
+  dim ~1024 (retention 0.23 @ dim 256 vs 0.89 @ dim 1024, same corpus).
 - ⬜ Scale-up targets: importance-guided data-free reactivation during sleep,
-  per-neuron metaplastic thresholds, harder curricula (100+ facts).
+  per-neuron metaplastic thresholds, denser curricula, dim growth at birth.
 
 ## Phase 4 — GENERALIZATION ✅ (begun)
 

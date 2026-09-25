@@ -50,6 +50,7 @@ class BlockReport:
     epochs: int
     mean_confidence: float
     affirm_rate: float
+    final_confidence: float = 0.0   # last-pass confidence: the growth signal
 
 
 @dataclass
@@ -133,22 +134,29 @@ class NeuralLoop:
         brain = self.brain
         exps = self.curriculum.set_experiences(set_name)
         confs, affirmed_count, steps = 0.0, 0, 0
-        for _ in range(epochs):
+        final_confidence = 0.0
+        for epoch in range(epochs):
             brain.state.reset()
+            epoch_confs, epoch_steps = 0.0, 0
             for exp in exps:
                 target = brain.vocab.get(exp.object)   # emerging vocabulary grows here
                 rep = self.experience_step(exp.subject, exp.relation, target, lr)
                 confs += rep.confidence
+                epoch_confs += rep.confidence
                 affirmed_count += int(rep.affirmed)
                 steps += 1
+                epoch_steps += 1
+            final_confidence = epoch_confs / max(1, epoch_steps)
         report = BlockReport(
             set_name=set_name,
             epochs=epochs,
             mean_confidence=confs / max(1, steps),
             affirm_rate=affirmed_count / max(1, steps),
+            final_confidence=final_confidence,
         )
         self.log(
-            f"  block {set_name}: mean confidence {report.mean_confidence:.2f}, "
+            f"  block {set_name}: mean confidence {report.mean_confidence:.2f} "
+            f"(final pass {report.final_confidence:.2f}), "
             f"self-affirmation {report.affirm_rate:.0%} of steps"
         )
         return report

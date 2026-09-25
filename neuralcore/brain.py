@@ -65,6 +65,18 @@ class Brain:
     def perceiver(self) -> Perceiver:
         return Perceiver(self.space, self.vocab, context_weight=self.config.context_weight)
 
+    # -- structural growth (the bot gets BIGGER when it learns more) -----------
+
+    def grow(self, delta_hidden: int, rng: np.random.Generator | None = None) -> int:
+        """Grow the association cortex: add silent neurons, extend importance
+        traces, and record the new size in the config that gets serialized.
+        The brain file physically grows; existing knowledge is untouched."""
+        rng = rng or np.random.default_rng(self.config.seed * 7919 + self.net.hidden_size())
+        hidden = self.net.add_neurons(delta_hidden, rng)
+        self.scheduler.add_neurons(delta_hidden)
+        self.config.hidden = hidden
+        return hidden
+
     # -- serialization (flat arrays only — no pickle, no opaque objects) ------
 
     def _payload(self) -> dict[str, np.ndarray]:
@@ -115,8 +127,7 @@ class Brain:
         )
         words = [str(w) for w in z["vocab_words"]]
         vectors = np.asarray(z["vocab_vectors"], dtype=float)
-        brain.vocab.words = {w: i for i, w in enumerate(words)}
-        brain.vocab.vectors = [vectors[i] for i in range(len(words))]
+        brain.vocab = EmergingVocabulary.from_state_dict(brain.space, {"words": words, "vectors": vectors})
         brain.state.load_state_dict({"h": z["state_h"], "alpha": z["state_alpha"]})
         brain.scheduler.load_state_dict({f"omega_{k}": z[f"omega_{k}"] for k in ("W1", "b1", "W2", "b2")})
         brain.meta = meta

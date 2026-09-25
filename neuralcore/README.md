@@ -78,6 +78,36 @@ The continual-learning scheduler exists precisely to push that plateau
 wider: it is what lets a *small* brain keep old knowledge while new
 knowledge arrives.
 
+## THE GROWTH EXPERIMENT — the bot gets bigger when it learns more
+
+`python3 -m neuralcore.grow` streams a large corpus (1,344 facts, 6 domains,
+16 sequential blocks) through the loop. Two pressure signals run continuously:
+*can't-learn-the-new-block* and *old-knowledge-decaying-mid-block*. Either
+one triggers **structural growth** — new silent neurons (newborn readouts at
+~zero, so nothing already learned is disturbed) that the next experiences
+wire up. The brain file physically grows:
+
+```
+brain at birth : 394,432 params, 1,464,400 B, hidden 192
+    GROWTH +48 neurons  (block 0)   capacity pressure 0.33 < 0.50
+    GROWTH +60 neurons  (block 1)   capacity pressure 0.45 < 0.50
+    GROWTH +75 neurons  (block 2)   capacity pressure 0.45 < 0.50
+RESULT: 1,464,400 B -> 6,336,928 B  (4.3x bigger, 3 growth events)
+retention 0.79 on 1,344 sequential facts (no replay)
+confidence climbed 0.33 -> 0.82 as the brain grew
+unseen pairs: 100% honest refusal | external memory: 0 bytes, always
+```
+
+This is the flowchart's `increase scale` branch made physical — and it is the
+mechanism the 35M-GPT transplant (Phase 6) needs: capacity that grows with
+knowledge instead of a fixed budget that forces forgetting.
+
+**Scaling law discovered en route:** the HRR dimension is the address space.
+256 dims hold ~tens of distinct experience-bindings; thousands of bindings
+need dim ~1024 (measured: same curriculum, retention 0.23 at dim 256 vs 0.89
+at dim 1024). The corpus generator and growth policy are size-parametric;
+only hardware limits how far they stream.
+
 ## Continual learning (A→B→C→D, sequential, no replay)
 
 Capacity-pressured regime (16.6k live weights):
@@ -137,7 +167,7 @@ python3 -m neuralcore.chat neuralcore_output/brain-consolidation.ncb \
 6. ✅ Genuinely new combinations — honest-refusal scoring
 7. ✅ Knowledge recovered with zero readable facts — byte-level + isolated-process tests
 8. ✅ Information/compression measured — size axis + prune axis + cliff map (this is now the primary goal)
-9. ⬜ Progressively larger knowledge — scale the curriculum
+9. ◳ Progressively larger knowledge — growth experiment live at 1.3k+ facts with structural growth; corpus generator is parametric for more
 10. ⬜ LANGUAGE — learn facts from text instead of oracle tuples (`docs/ROADMAP.md` Phase 5)
 11. ⬜ VISION — image → representation → shared state (Phase 5b)
 12. ⬜ MULTIMODAL KNOWLEDGE (Phase 5c)

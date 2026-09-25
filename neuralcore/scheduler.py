@@ -96,6 +96,17 @@ class MetaplasticScheduler:
         for o in self.omega.values():
             o *= rho
 
+    def add_neurons(self, delta: int) -> None:
+        """Track structural growth: newborn synapses carry zero importance,
+        i.e. they are born maximally plastic (gate = 1)."""
+        delta = int(delta)
+        if delta <= 0:
+            return
+        for store in (self.omega, self.pending):
+            store["W1"] = np.vstack([store["W1"], np.zeros((delta, store["W1"].shape[1]))])
+            store["b1"] = np.concatenate([store["b1"], np.zeros(delta)])
+            store["W2"] = np.hstack([store["W2"], np.zeros((store["W2"].shape[0], delta))])
+
     def state_dict(self) -> dict:
         out = {f"omega_{k}": v.copy() for k, v in self.omega.items()}
         out.update({f"pending_{k}": v.copy() for k, v in self.pending.items()})
