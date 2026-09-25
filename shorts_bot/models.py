@@ -35,6 +35,15 @@ def platform_uploaded_at_column(platform: ChannelPlatform) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Event:
+    """One timestamped activity-feed entry shown on the status panel."""
+
+    ts: str
+    kind: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class SourceVideo:
     path: Path
     source_url: str

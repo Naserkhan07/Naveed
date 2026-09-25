@@ -121,6 +121,9 @@ class Settings:
     hashtags_youtube_max: int
     hashtags_instagram_max: int
     hashtags_facebook_max: int
+    status_panel_enabled: bool
+    status_panel_host: str
+    status_panel_port: int
 
     @classmethod
     def from_env(
@@ -209,6 +212,10 @@ class Settings:
             hashtags_youtube_max=_int_env("HASHTAGS_YOUTUBE_MAX", 59),
             hashtags_instagram_max=_int_env("HASHTAGS_INSTAGRAM_MAX", 30),
             hashtags_facebook_max=_int_env("HASHTAGS_FACEBOOK_MAX", 0),
+            status_panel_enabled=_bool_env("STATUS_PANEL_ENABLED", True),
+            status_panel_host=os.getenv("STATUS_PANEL_HOST", "127.0.0.1").strip()
+            or "127.0.0.1",
+            status_panel_port=_int_env("STATUS_PANEL_PORT", 8000),
         )
         settings.validate_common()
         return settings
@@ -313,6 +320,8 @@ class Settings:
             raise ConfigurationError(
                 "HASHTAGS_INSTAGRAM_MAX above 30 makes Instagram reject the caption."
             )
+        if not 1 <= self.status_panel_port <= 65_535:
+            raise ConfigurationError("STATUS_PANEL_PORT must be between 1 and 65535.")
         if (
             self.ytdlp_cookies_from_browser
             and self.ytdlp_cookies_from_browser not in _SUPPORTED_COOKIE_BROWSERS

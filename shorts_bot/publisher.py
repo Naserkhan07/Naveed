@@ -19,7 +19,7 @@ from datetime import UTC
 from pathlib import Path
 
 from .config import Settings
-from .db import JobRepository
+from .db import JobRepository, log_safely
 from .errors import UploadError, UploadLimitError, WorkflowError
 from .facebook import FacebookReelUploader
 from .hashtags import plan_with_hashtags
@@ -201,6 +201,12 @@ class Publisher:
                     publication.id,
                     error="clip file missing on disk",
                 )
+                log_safely(
+                    self.repository,
+                    "error",
+                    f"Queued clip file vanished before {platform.value} could publish it: "
+                    f"{publication.title} ({publication.mp4_path})",
+                )
                 break
             _report(
                 f"Publishing to {platform.value}: {publication.title} "
@@ -221,12 +227,30 @@ class Publisher:
                         f"{platform.value} upload limit reached; remaining credits will "
                         f"catch up on the next run: {exc}"
                     )
+                log_safely(
+                    self.repository,
+                    "limit",
+                    f"{platform.value} upload limit reached on {publication.title}; "
+                    "unspent credits will catch up automatically.",
+                )
                 break
             except (UploadError, WorkflowError) as exc:
                 self.repository.update_publication(publication.id, error=str(exc))
                 _report(f"{platform.value} upload failed; the clip stays queued: {exc}")
+                log_safely(
+                    self.repository,
+                    "error",
+                    f"{platform.value} upload failed for {publication.title}: {exc}",
+                )
                 break
             published.append(updated)
+            url = _publication_url(updated, platform)
+            log_safely(
+                self.repository,
+                "publish",
+                f"Published to {platform.value}: {updated.title}"
+                + (f" — {url}" if url else ""),
+            )
             self._cleanup_if_done(updated)
         return published
 
@@ -293,6 +317,19 @@ class Publisher:
         for platform in _settings_schedules(self.settings):
             published.extend(await self.publish_due(platform, report=report))
         return published
+
+
+def _publication_url(publication: Publication, platform: ChannelPlatform) -> str:
+    """Public link to an uploaded clip, for the status panel's activity feed."""
+    if platform is ChannelPlatform.YOUTUBE:
+        return (
+            f"https://youtu.be/{publication.youtube_video_id}"
+            if publication.youtube_video_id
+            else ""
+        )
+    if platform is ChannelPlatform.INSTAGRAM:
+        return publication.instagram_url or ""
+    return publication.facebook_url or ""
 
 
 def _utc_now_iso() -> str:

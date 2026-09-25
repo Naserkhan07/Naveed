@@ -43,6 +43,8 @@ hotclip-exports/ ──► intake scan ──► SQLite publication queue ──
   clips — `YOUTUBE_UPLOADS_PER_SLOT` per slot, etc. — with per-clip upload timestamps.
 - A slot that had nothing ready (or failed) keeps its credit: the scheduler **catches up**
   automatically as soon as clips exist, then returns to the normal cadence.
+- A **status panel** runs at http://localhost:8000 for as long as the watcher does — full
+  live view of discoveries, deliveries, queue, credits, and publishes (see section 6).
 
 ## 1. Install HotClip (the clipper)
 
@@ -141,6 +143,7 @@ Single passes and utilities:
 python -m shorts_bot.file_queue --once             # one full cycle, then exit
 python -m shorts_bot.file_queue --scan-channels    # only deliver new channel uploads
 python -m shorts_bot.file_queue --publish youtube  # publish what YouTube is owed now
+python -m shorts_bot.status_panel                  # dashboard only (read-only view)
 python -m shorts_bot.youtube_auth                  # (re)connect YouTube
 python -m shorts_bot.instagram_token --facebook    # (re)create Meta long-lived token
 python -m pytest -q                                # tests
@@ -151,7 +154,32 @@ For exact-to-the-minute publishing on a desktop, keep the watcher running — it
 tick publishes within ~30s of each slot. Windows Task Scheduler/macOS cron can instead call
 `--publish <platform>` at each slot.
 
-## 6. Scheduling model
+## 6. Status panel — http://localhost:8000
+
+The watcher always serves a live localhost dashboard (no setup, no extra install). While
+`main.py` runs, open **http://localhost:8000** in any browser and it auto-refreshes every
+5 seconds:
+
+- **RUNNING / STALE badge** — driven by the watcher's database heartbeat; if the bot ever
+  stops ticking the badge turns red, plus "last tick … ago" and uptime.
+- **Per-platform cards** — uploads done today vs. what the schedule owes right now, slot
+  chips (done / partial / due / upcoming), credits due right now, queue depth, total
+  published, last upload time, next slot, and the per-slot pace.
+- **Activity feed** — every discovery, HotClip delivery, queued clip, publish (with the
+  live post link), upload limit, and error: *what happened, when, and where*.
+- **Publication queue** — every clip with a ✓ (linked) or … pending cell per platform.
+- **Footer** — HotClip folders, hashtag count, channels, links pending, scan interval.
+
+The address is printed when the watcher starts (`[panel] live status dashboard: …`). If
+port 8000 is busy the next free port is used automatically. Configure or disable via
+`STATUS_PANEL_PORT`, `STATUS_PANEL_HOST`, `STATUS_PANEL_ENABLED=false`.
+A standalone read-only view against the same database also works without the watcher:
+`python -m shorts_bot.status_panel` (it then honestly shows STALE until the watcher runs).
+
+> GitHub Actions runs are ephemeral, so the panel applies to local/always-on runs; in the
+> cloud use the Actions run log and the persisted queue instead.
+
+## 7. Scheduling model
 
 ```dotenv
 SCHEDULE_TIMEZONE=Asia/Kolkata
@@ -176,7 +204,7 @@ FACEBOOK_UPLOADS_PER_SLOT=10
 
 A platform with **no** `*_SCHEDULE_TIMES` is published immediately during intake instead.
 
-## 7. Hashtags on every video
+## 8. Hashtags on every video
 
 Every upload gets the ordered block from [`hashtags.txt`](hashtags.txt) appended
 automatically — from the first tag down, as many as the platform accepts:
@@ -197,7 +225,7 @@ automatically — from the first tag down, as many as the platform accepts:
   `HASHTAGS_YOUTUBE_MAX`/`HASHTAGS_INSTAGRAM_MAX`/`HASHTAGS_FACEBOOK_MAX`
   (0 = unlimited; values above a platform's real cap are rejected on startup).
 
-## 8. Run it on GitHub Actions (cloud autopilot)
+## 9. Run it on GitHub Actions (cloud autopilot)
 
 [`.github/workflows/autopilot.yml`](.github/workflows/autopilot.yml) runs the whole
 loop on GitHub every hour (plus on demand): test → harvest new channel uploads →
@@ -266,6 +294,9 @@ One-time setup in the repo's **Settings → Secrets and variables → Actions**:
 | `HASHTAGS_YOUTUBE_MAX` | `59` | YouTube hashtag budget (+1 uploader `#Shorts` = 60 cap) |
 | `HASHTAGS_INSTAGRAM_MAX` | `30` | Instagram's hard caption hashtag cap |
 | `HASHTAGS_FACEBOOK_MAX` | `0` | 0 = unlimited; Facebook gets the full list |
+| `STATUS_PANEL_ENABLED` | `true` | Serve the live localhost dashboard with the watcher |
+| `STATUS_PANEL_HOST` | `127.0.0.1` | Dashboard bind address |
+| `STATUS_PANEL_PORT` | `8000` | Dashboard port (auto-increments if busy) |
 | `RIGHTS_ACKNOWLEDGED` | `false` | Required rights confirmation |
 
 ## Project layout
@@ -275,6 +306,8 @@ One-time setup in the repo's **Settings → Secrets and variables → Actions**:
 - `shorts_bot/hotclip.py` — export-dir scanner (mp4 + cover + `.post.txt` + `clips.json`)
 - `shorts_bot/publisher.py` — FIFO publishing with per-slot credits and Meta cooldowns
 - `shorts_bot/hashtags.py` — per-platform hashtag block (caps, dedupe, char budgets)
+- `shorts_bot/status_panel.py` + `status_page.html` — the localhost dashboard
+  (heartbeat badge, per-platform cards, activity feed, queue; `python -m shorts_bot.status_panel`)
 - `shorts_bot/scheduler.py` — per-weekday schedule grammar and credit math
 - `shorts_bot/channels.py` — channel list parsing + yt-dlp latest-uploads discovery
 - `shorts_bot/downloader.py` — yt-dlp source downloads (best quality, retries, cookies)

@@ -38,6 +38,9 @@ instagram-long-token = "shorts_bot.instagram_token:main"
 where = ["."]
 include = ["shorts_bot*"]
 
+[tool.setuptools.package-data]
+shorts_bot = ["status_page.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

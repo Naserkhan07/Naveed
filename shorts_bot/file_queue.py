@@ -13,12 +13,13 @@ from pathlib import Path
 
 from .channels import discover_new_videos
 from .config import Settings
-from .db import JobRepository
+from .db import JobRepository, heartbeat_timestamp, log_safely, state_safely
 from .downloader import VideoDownloader, is_youtube_url
 from .errors import ConfigurationError, WorkflowError
 from .hotclip import scan_export_dir
 from .models import ChannelPlatform
 from .publisher import Publisher
+from .status_panel import start_status_panel
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class HotClipCoordinator:
             source = await self.downloader.download(url, staging)
         except WorkflowError as exc:
             print(f"Download failed for {url}: {exc}", file=sys.stderr, flush=True)
+            log_safely(self.repository, "error", f"Download failed for {url}: {exc}")
             return None
         label = source_label or source.title
         suffix = source.path.suffix or ".mp4"
@@ -140,6 +142,11 @@ class HotClipCoordinator:
 
             shutil.move(str(source.path), destination)
         print(f"[{label}] handed to HotClip: {destination}", flush=True)
+        log_safely(
+            self.repository,
+            "delivery",
+            f"[{label}] handed to HotClip's watch folder: {destination.name}",
+        )
         with suppress(OSError):
             source.path.parent.rmdir()
         return destination
@@ -169,6 +176,11 @@ class HotClipCoordinator:
             )
             added += 1
             print(f"[intake] queued new clip for publishing: {title}", flush=True)
+            log_safely(
+                self.repository,
+                "queue",
+                f"Queued new clip from HotClip exports: {title} ({clip.mp4_path.name})",
+            )
         return added
 
 
@@ -204,6 +216,19 @@ async def run_file_queue(
             "HotClip makes the clips; the scheduler publishes them. Ctrl+C to stop.",
             flush=True,
         )
+
+    panel = start_status_panel(settings, repository) if watch else None
+    state_safely(repository, "started_at", heartbeat_timestamp())
+    if watch:
+        if panel is not None:
+            print(f"[panel] live status dashboard: {panel.url}", flush=True)
+            log_safely(
+                repository,
+                "system",
+                f"Watcher started — status panel at {panel.url}",
+            )
+        else:
+            log_safely(repository, "system", "Watcher started (status panel unavailable)")
 
     failures: set[str] = set()
     next_channel_scan = time.monotonic()
@@ -252,6 +277,11 @@ async def run_file_queue(
                 video.url,
                 video.title,
             )
+            log_safely(
+                repository,
+                "channel",
+                f"New upload from {video.channel_key}: {video.title} — handed to HotClip",
+            )
         return processed
 
     async def intake_and_publish() -> None:
@@ -276,6 +306,7 @@ async def run_file_queue(
         return 1 if failures else 0
 
     while True:
+        state_safely(repository, "heartbeat", heartbeat_timestamp())
         try:
             if "download" in stages:
                 await process_links()

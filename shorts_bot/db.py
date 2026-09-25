@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import logging
 import sqlite3
 import uuid
 from datetime import UTC, datetime
@@ -7,6 +9,7 @@ from pathlib import Path
 
 from .models import (
     ChannelPlatform,
+    Event,
     Publication,
     platform_column,
 )
@@ -41,7 +44,32 @@ CREATE TABLE IF NOT EXISTS publication_clips (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_publication_queue ON publication_clips(queued_at, id);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_id ON events(id DESC);
+
+CREATE TABLE IF NOT EXISTS bot_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+_EVENT_KINDS = ("info", "system", "channel", "delivery", "queue", "publish", "error", "limit")
+_EVENT_MAX_ROWS = 2_000
+
+
+def _utc_now_seconds() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def heartbeat_timestamp() -> str:
+    """UTC timestamp for watcher heartbeats (shared by watcher and panel tests)."""
+    return _utc_now_seconds()
 
 _PUBLICATION_COLUMNS = (
     "id",
@@ -74,6 +102,9 @@ class JobRepository:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
+        if self.path.exists():
+            with contextlib.suppress(sqlite3.OperationalError):
+                connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
     @staticmethod
@@ -179,6 +210,11 @@ class JobRepository:
         return [self._publication_from_row(row) for row in rows]
 
     def update_publication(self, publication_id: str, **fields: object) -> Publication:
+        if not fields:
+            publication = self.get_publication(publication_id)
+            if publication is None:
+                raise KeyError(f"Unknown publication {publication_id}")
+            return publication
         allowed = set(_PUBLICATION_COLUMNS) - {"id"}
         unknown = fields.keys() - allowed
         if unknown:
@@ -238,6 +274,83 @@ class JobRepository:
             counts["Facebook"] = int(rows["facebook"] or 0)
         return counts
 
+    # ---- activity feed + watcher state (status panel) ------------------------------
+
+    def log_event(self, kind: str, message: str) -> None:
+        """Append one activity-feed entry (e.g. what was published, when, where)."""
+        if kind not in _EVENT_KINDS:
+            kind = "info"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO events (ts, kind, message) VALUES (?, ?, ?)",
+                (self._now(), kind, message[:600]),
+            )
+            # Keep the feed bounded: drop the oldest half once it doubles the cap.
+            count = connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+            if count > 2 * _EVENT_MAX_ROWS:
+                connection.execute(
+                    "DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?)",
+                    (count - _EVENT_MAX_ROWS,),
+                )
+
+    def recent_events(self, limit: int = 150) -> list[Event]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT ts, kind, message FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            Event(ts=str(row["ts"]), kind=str(row["kind"]), message=str(row["message"]))
+            for row in rows
+        ]
+
+    def set_state(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    def get_state(self, key: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM bot_state WHERE key = ?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row else None
+
+    def platform_summary(self, platform: ChannelPlatform) -> dict[str, object]:
+        """pending/done totals plus the most recent upload timestamp for one platform."""
+        id_column = platform_column(platform)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS total, COUNT({id_column}) AS done, "  # noqa: S608
+                f"MAX({platform.value.lower()}_uploaded_at) AS last_at "
+                f"FROM publication_clips"
+            ).fetchone()
+        total = int(row["total"])
+        done = int(row["done"])
+        return {"total": total, "done": done, "pending": total - done, "last_at": row["last_at"]}
+
     @staticmethod
     def _publication_from_row(row: sqlite3.Row) -> Publication:
         return Publication(**{name: row[name] for name in _PUBLICATION_COLUMNS})
+
+
+logger = logging.getLogger(__name__)
+
+
+def log_safely(repository: JobRepository, kind: str, message: str) -> None:
+    """Write an activity-feed event without ever breaking the caller's work."""
+    try:
+        repository.log_event(kind, message)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not write status event: %s", message, exc_info=True)
+
+
+def state_safely(repository: JobRepository, key: str, value: str) -> None:
+    """Write a bot_state heartbeat without ever breaking the caller's work."""
+    try:
+        repository.set_state(key, value)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not write bot state %s", key, exc_info=True)
