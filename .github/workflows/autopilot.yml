@@ -6,7 +6,7 @@
 #
 # It wakes every 15 minutes (cron can be delayed — the credit-based scheduler
 # just publishes what is owed when a run happens, so nothing is ever lost) and the
-# HotClip toolchain persist between runs through GitHub caches, the dashboard
+# HotClip toolchain persists between runs through GitHub caches, the dashboard
 # is republished to GitHub Pages after every run, and a tiny monthly keepalive
 # commit stops GitHub from disabling scheduled runs on idle repos.
 #
@@ -22,8 +22,9 @@
 #   INSTAGRAM_ACCESS_TOKEN   long-lived Meta token (Facebook reuses it by default)
 #   FACEBOOK_PAGE_ID         numeric Page ID
 #   FACEBOOK_ACCESS_TOKEN    long-lived Page token (or leave unset to reuse the IG token)
-#   YTDLP_COOKIES_TXT        (optional) Netscape-format YouTube cookies — runners are
-#                            datacenter IPs, and YouTube may demand "not a bot" without them
+#   YTDLP_COOKIES_TXT        Netscape-format YouTube cookies — runners are datacenter
+#                            IPs, and YouTube demands "not a bot" without them;
+#                            export from a signed-in browser session
 #
 # NOTE: the dashboard is a public page on a public repo. It never shows tokens
 # or secrets — only clip titles, schedule progress, and post links — but keep
@@ -59,7 +60,7 @@ env:
   # ---- schedule + volume configuration (edit these like .env) ----
   SCHEDULE_TIMEZONE: "Asia/Kolkata"
   YOUTUBE_SCHEDULE_TIMES: "mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30"
-  YOUTUBE_UPLOADS_PER_SLOT: "33" # 3 slots × 2 = 6/day, the default API quota
+  YOUTUBE_UPLOADS_PER_SLOT: "33" # 3 slots × 33 = 99/day
   INSTAGRAM_SCHEDULE_TIMES: "mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30"
   INSTAGRAM_UPLOADS_PER_SLOT: "10"
   FACEBOOK_SCHEDULE_TIMES: "mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00"
@@ -78,7 +79,8 @@ env:
   HOTCLIP_WATCH_DIR: "hotclip-watch"
   HOTCLIP_EXPORT_DIR: "hotclip-exports"
   # In the cloud there is no localhost: the dashboard is exported to GitHub
-  # Pages instead (same page, same data). Heartbeats still mark it RUNNING.
+  # Pages instead (same page, same data). A fresh heartbeat within the stale
+  # window plus a run_finished_at marker drives the RUNNING / IDLE badge.
   STATUS_PANEL_ENABLED: "false"
   STATUS_STALE_AFTER_SECONDS: "2700" # 45 min covers the 15-min cron + delays
   # Experimental: clip in GitHub via HotClip's headless CLI (AGPL source cloned
@@ -189,6 +191,9 @@ jobs:
               echo "::warning::Facebook secrets missing; Facebook publishing disabled."
             fi
           } >> "$GITHUB_ENV"
+          if [ -z "$YTDLP_COOKIES_TXT" ]; then
+            echo "::warning::YTDLP_COOKIES_TXT secret is not set. GitHub runners use datacenter IPs; YouTube downloads will fail with 'Sign in to confirm you are not a bot' until a Netscape-format cookie export is added (Settings → Secrets and variables → Actions → New repository secret: YTDLP_COOKIES_TXT)."
+          fi
 
       - name: Split requested stages
         run: |
@@ -218,6 +223,7 @@ jobs:
 
       - name: Fetch and install HotClip (AGPL, used as an external tool)
         if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        id: hotclip-install
         continue-on-error: true
         run: |
           corepack enable
@@ -225,10 +231,43 @@ jobs:
             git clone --depth 1 "$HOTCLIP_REPO" hotclip-app
           fi
           cd hotclip-app
-          pnpm install
+          # Wipe any partially-installed node_modules left by a prior failed
+          # install (ERR_PNPM_IGNORED_BUILDS) so pnpm starts from a clean state
+          # rather than re-detecting incomplete packages.
+          if [ -d node_modules ] && [ ! -d node_modules/.pnpm ]; then
+            echo "Wiping incomplete node_modules from a prior failed install…"
+            rm -rf node_modules
+          fi
+          # Allow native build scripts ONLY for the packages that actually need
+          # them (esbuild downloads a platform binary; ffmpeg-static and the
+          # @ffprobe-installer/* packages ship native binaries; onnxruntime-node
+          # has a native addon). Avoids a blanket --ignore-scripts=false which
+          # would run every dependency's install script.
+          pnpm install --frozen-lockfile=false \
+            --config.onlyBuiltDependencies=esbuild,ffmpeg-static,onnxruntime-node,@ffprobe-installer/ffprobe,@ffprobe-installer/linux-x64,@ffprobe-installer/darwin-arm64,@ffprobe-installer/darwin-x64,@ffprobe-installer/win32-x64
+        env:
+          # pnpm >=10 refuses to run install scripts unless they are explicitly
+          # allowed; mirror the allow-list via env so nested invocations honour it.
+          PNPM_CONFIG_ONLY_BUILT_DEPENDENCIES: "esbuild,ffmpeg-static,onnxruntime-node,@ffprobe-installer/ffprobe,@ffprobe-installer/linux-x64,@ffprobe-installer/darwin-arm64,@ffprobe-installer/darwin-x64,@ffprobe-installer/win32-x64"
+
+      - name: Check HotClip install result
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'failure'
+        id: hotclip-check
+        run: |
+          echo "::warning::HotClip install failed — skipping clipping this run. Publishing and dashboard refresh continue."
+          echo "CLIPPING_NEEDED=false" >> "$GITHUB_ENV"
+          echo "HOTCLIP_INSTALL_FAILED=1" >> "$GITHUB_ENV"
+          {
+            echo "### ⚠️ HotClip install failed"
+            echo
+            echo "The native toolchain (esbuild, ffmpeg-static, onnxruntime-node, ffprobe-installer)"
+            echo "could not be built this run. Clipping was skipped; **publishing of already-queued"
+            echo "clips and dashboard deployment still ran**. The run will be marked failed so the"
+            echo "problem is visible in Actions — it auto-retries on the next cron tick (≤15 min)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clip every pending source with HotClip
-        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'success'
         continue-on-error: true # a clipping failure must never block publishing the backlog
         working-directory: hotclip-app
         run: |
@@ -285,6 +324,12 @@ jobs:
         if: always()
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Mark run failed if HotClip install did not complete
+        if: always() && env.HOTCLIP_INSTALL_FAILED == '1'
+        run: |
+          echo "Failing the job so the install problem surfaces in Actions; dashboard has already been deployed."
+          exit 1
 
   keepalive:
     name: Keep scheduled automation alive (monthly)
