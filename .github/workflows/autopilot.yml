@@ -66,8 +66,11 @@ env:
   FACEBOOK_UPLOADS_PER_SLOT: "10"
   # ---- behavior ----
   RIGHTS_ACKNOWLEDGED: "true"
-  CHANNEL_SCAN_MAX_VIDEOS: "5"
-  CHANNEL_SCAN_INTERVAL_MINUTES: "60" # persisted in the DB, honoured across runs
+  CHANNEL_SCAN_MAX_VIDEOS: "50"
+  CHANNEL_SCAN_INTERVAL_MINUTES: "30" # persisted in the DB, honoured across runs
+  CHANNEL_FALLBACK_LOOKBACK_DAYS: "4"
+  CHANNEL_MAX_SOURCES_PER_SCAN: "5"
+  READY_CLIP_BUFFER_TARGET: "99"
   FACEBOOK_LIMIT_COOLDOWN_HOURS: "24"
   DELETE_UPLOADED_CLIPS: "true" # keeps the cached exports lean in the cloud
   WORK_DIR: "work"
