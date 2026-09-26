@@ -1,0 +1,12 @@
+Required hashtag block for every upload (edit freely).
+Only words starting with # are picked up; anything else is a comment,
+so never write example tags in these header lines.
+Order is preserved top to bottom. Per platform the bot appends as many
+as the platform allows: Instagram 30, YouTube 59 plus the Shorts tag the
+uploader adds itself (= the 60 YouTube maximum), Facebook the full list.
+
+Global reach tags:
+#viral #viralvideo #viralreels #trending #trendingreels #explore #explorepage #fyp #foryou #foryoupage #worldwide #global #international #world
+
+Country tags (alphabetical):
+#afghanistan #albania #algeria #andorra #angola #antiguaandbarbuda #argentina #armenia #australia #austria #azerbaijan #bahamas #bahrain #bangladesh #barbados #belarus #belgium #belize #benin #bhutan #bolivia #bosniaandherzegovina #botswana #brazil #brunei #bulgaria #burkinafaso #burundi #cambodia #cameroon #canada #capeverde #centralafricanrepublic #chad #chile #china #colombia #comoros #congo #costarica #croatia #cuba #cyprus #czechia #denmark #djibouti #dominica #dominicanrepublic #ecuador #egypt #elsalvador #equatorialguinea #eritrea #estonia #eswatini #ethiopia #fiji #finland #france #gabon #gambia #georgia #germany #ghana #greece #grenada #guatemala #guinea #guineabissau #guyana #haiti #honduras #hungary #iceland #india #indonesia #iran #iraq #ireland #israel #italy #jamaica #japan #jordan #kazakhstan #kenya #kiribati #kuwait #kyrgyzstan #laos #latvia #lebanon #lesotho #liberia #libya #liechtenstein #lithuania #luxembourg #madagascar #malawi #malaysia #maldives #mali #malta #marshallislands #mauritania #mauritius #mexico #micronesia #moldova #monaco #mongolia #montenegro #morocco #mozambique #myanmar #namibia #nauru #nepal #netherlands #newzealand #nicaragua #niger #nigeria #northkorea #northmacedonia #norway #oman #pakistan #palau #palestine #panama #papuanewguinea #paraguay #peru #philippines #poland #portugal #qatar #romania #russia #rwanda #saintkittsandnevis #saintlucia #saintvincentandthegrenadines #samoa #sanmarino #saotomeandprincipe #saudiarabia #senegal #serbia #seychelles #sierraleone #singapore #slovakia #slovenia #solomonislands #somalia #southafrica #southkorea #southsudan #spain #srilanka #sudan #suriname #sweden #switzerland #syria #tajikistan #tanzania #thailand #timorleste #togo #tonga #trinidadandtobago #tunisia #turkey #turkmenistan #tuvalu #uganda #ukraine #unitedarabemirates #unitedkingdom #unitedstates #uruguay #uzbekistan #vanuatu #vatican #venezuela #vietnam #yemen #zambia #zimbabwe

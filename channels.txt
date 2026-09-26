@@ -1,0 +1,15 @@
+# Automatic channel discovery — one channel per line (@handle, URL, or UC id).
+# The watcher checks these channels and hands every NEW upload to HotClip to clip.
+#
+# IMPORTANT: only keep channels here whose content you own or have explicit
+# permission/license to download, edit, and republish (several creators below
+# publicly allow clipping — verify each creator's current policy yourself).
+# RIGHTS_ACKNOWLEDGED=true means you have confirmed this.
+#
+@OutdoorBoys
+@MrBeast
+@IShowSpeed
+@NickDiGiovanni
+@NOTYOURTYPE
+@Hardtoonz22
+@TechnoGamerzOfficial
