@@ -59,7 +59,7 @@ env:
   # ---- schedule + volume configuration (edit these like .env) ----
   SCHEDULE_TIMEZONE: "Asia/Kolkata"
   YOUTUBE_SCHEDULE_TIMES: "mon=07:30,13:00,20:30;tue=07:30,13:00,20:30;wed=07:30,13:00,20:30;thu=07:30,13:00,20:30;fri=07:30,13:00,21:30;sat=08:30,13:30,21:30;sun=08:30,13:30,21:30"
-  YOUTUBE_UPLOADS_PER_SLOT: "2" # 3 slots × 2 = 6/day, the default API quota
+  YOUTUBE_UPLOADS_PER_SLOT: "33" # 3 slots × 2 = 6/day, the default API quota
   INSTAGRAM_SCHEDULE_TIMES: "mon=08:00,20:30;tue=08:00,19:30;wed=12:00,20:30;thu=08:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:30"
   INSTAGRAM_UPLOADS_PER_SLOT: "10"
   FACEBOOK_SCHEDULE_TIMES: "mon=09:00,20:00;tue=09:00,19:30;wed=12:00,20:00;thu=09:00,19:30;fri=12:00,20:30;sat=10:00,19:30;sun=10:30,19:00"
