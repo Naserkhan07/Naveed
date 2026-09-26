@@ -242,6 +242,11 @@ automatically — from the first tag down, as many as the platform accepts:
 
 ## 9. Run everything on GitHub — no local PC needed
 
+> **Prefer Google Cloud instead?** See **[`cloudrun/README.md`](cloudrun/README.md)** —
+> it deploys the entire pipeline (including HotClip clipping) to **Cloud Run** as an
+> always-on, self-healing container with durable state in a Cloud Storage bucket,
+> via one command: `bash cloudrun/deploy.sh`.
+
 The autopilot runs on GitHub and wakes every 15 minutes (plus on pushes to `main` and
 manual runs). Each cycle first publishes clips already prepared for platforms whose own
 schedules are due, then harvests and clips recent unseen sources and queues finished work

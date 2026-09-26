@@ -21,6 +21,9 @@ youtube_token.json
 cookies.txt
 *cookies*.txt
 
+# Cloud Run: local secret material must never be committed
+cloudrun/secrets/
+
 # Editors / OS
 .idea/
 .DS_Store
