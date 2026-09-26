@@ -118,7 +118,7 @@ function renderPlatforms(list) {
       <ul class="kv">
         ${due}
         <li><span class="k">queue waiting</span><b>${p.queue_pending}</b></li>
-        <li><span class="k">total published</span>${p.total_done}</li>
+        <li><span class="k">total published</span><b>${p.total_done}</b></li>
         <li><span class="k">last upload</span>${esc(ago(p.last_upload_at))}</li>
         ${next}
         ${p.scheduled ? `<li><span class="k">pace</span>${p.uploads_per_slot} per slot × ${p.slots_today_count} slot(s) today</li>` : ""}

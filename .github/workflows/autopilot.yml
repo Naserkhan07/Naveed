@@ -85,7 +85,7 @@ env:
   STATUS_STALE_AFTER_SECONDS: "2700" # 45 min covers the 15-min cron + delays
   # Experimental: clip in GitHub via HotClip's headless CLI (AGPL source cloned
   # at runtime, never vendored here). A clipping failure never blocks publishing.
-  HOTCLIP_CLOUD: "true"
+  HOTCLIP_CLOUD: "false"
   HOTCLIP_REPO: "https://github.com/xixihhhh/hotclip"
   RUN_STAGES: ${{ inputs.stages || 'download,channels,intake,publish' }}
 
