@@ -242,6 +242,11 @@ automatically — from the first tag down, as many as the platform accepts:
 
 ## 9. Run everything on GitHub — no local PC needed
 
+> **Prefer Google Cloud instead?** See **[`cloudrun/README.md`](cloudrun/README.md)** —
+> it deploys the entire pipeline (including HotClip clipping) to **Cloud Run** as an
+> always-on, self-healing container with durable state in a Cloud Storage bucket,
+> via one command: `bash cloudrun/deploy.sh`.
+
 The autopilot runs on GitHub and wakes every 15 minutes (plus on pushes to `main` and
 manual runs). Each cycle first publishes clips already prepared for platforms whose own
 schedules are due, then harvests and clips recent unseen sources and queues finished work
@@ -281,10 +286,13 @@ repo: it never contains tokens or secrets, only clip titles, progress, and post 
    Pages URL on that first run; every 15-minute tick keeps everything moving.
 
 Schedules, timezone, and per-slot volumes live in the workflow's `env:` block (edit
-them like `.env`); `HOTCLIP_CLOUD: "true"` enables experimental cloud clipping via
-HotClip's headless CLI (AGPL source cloned at runtime, never vendored here — failures
-never block publishing the backlog). Meta long-lived tokens still expire ~60 days:
-refresh them like before.
+them like `.env`). **Cloud clipping is enabled by default** (`HOTCLIP_CLOUD: "true"`):
+HotClip's headless CLI (AGPL source cloned at runtime, never vendored here) turns each
+run's downloaded sources into finished Shorts on the runner — up to 8 per tick (any
+backlog catches up over subsequent ticks), a clipping failure never blocks publishing,
+and successfully clipped sources are deleted so the state cache stays lean enough to
+run forever. Set `HOTCLIP_CLOUD: "false"` in the workflow env to disable clipping.
+Meta long-lived tokens still expire ~60 days: refresh them like before.
 
 The local watcher path (sections 5–7) stays fully supported for anyone who prefers
 an always-on PC; the localhost panel and the Pages dashboard are the same page.

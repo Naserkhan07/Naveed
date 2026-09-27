@@ -1,0 +1,30 @@
+# Keep secrets, local state, and dev cruft out of the build context / image.
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tests
+
+# Secrets & local config — never bake these into the image
+.env
+.envexample
+*.db
+*.db-shm
+*.db-wal
+work/
+hotclip-watch/
+hotclip-exports/
+credentials/
+client_secret*.json
+youtube_token.json
+cookies.txt
+*cookies*.txt
+cloudrun/secrets/
+
+# Editor / OS
+.idea
+.vscode
+.DS_Store
