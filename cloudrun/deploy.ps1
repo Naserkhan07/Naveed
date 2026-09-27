@@ -116,6 +116,7 @@ $deployArgs = @(
   "--memory", $Memory,
   "--timeout", "3600",
   "--allow-unauthenticated",
+  "--quiet",
   "--add-volume", "name=data,type=cloud-storage,bucket=$Bucket",
   "--add-volume-mount", "volume=data,mount-path=/data",
   "--env-vars-file", "cloudrun/autopilot.env.yaml"

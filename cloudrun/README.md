@@ -88,8 +88,11 @@ signed in — no local installs, works identically on Windows/Mac/Linux:
    ```bash
    git clone https://github.com/Naserkhan07/Naveed && cd Naveed
    gcloud config set project YOUR_PROJECT_ID
+   bash cloudrun/seed_secrets_from_repo.sh   # restores the repo's committed credentials into cloudrun/secrets/
    bash cloudrun/deploy.sh
    ```
+   (Prefer to supply fresh credentials by hand instead? Skip the seed step and
+   upload files into `cloudrun/secrets/` yourself — see step 2 below.)
 3. When it asks / fails on secrets (step 2 below), upload your credential files
    into `cloudrun/secrets/` using Cloud Shell's **⋮ → Upload** button (or create
    them with `nano cloudrun/secrets/instagram_access_token.txt`), then re-run

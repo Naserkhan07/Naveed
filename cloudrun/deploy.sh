@@ -117,6 +117,7 @@ DEPLOY_ARGS=(
   --memory "$MEMORY"
   --timeout 3600
   --allow-unauthenticated
+  --quiet
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}"
   --add-volume-mount "volume=data,mount-path=/data"
   --env-vars-file cloudrun/autopilot.env.yaml
