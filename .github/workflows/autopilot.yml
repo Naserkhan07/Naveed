@@ -142,6 +142,21 @@ jobs:
           python -m pip install -U pip
           pip install -e ".[clipper]"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Start PO-token provider (bgutil - defeats datacenter bot walls)
+        run: |
+          pip install -U bgutil-ytdlp-pot-provider
+          BGV=$(pip show bgutil-ytdlp-pot-provider | awk '/^Version:/{print $2}')
+          echo "bgutil plugin version: $BGV"
+          git clone --single-branch --branch "$BGV" --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil || git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil
+          cd /tmp/bgutil/server
+          npm ci
+          npx tsc
+          nohup node build/main.js > /tmp/bgutil-server.log 2>&1 &
+          sleep 4
+          curl -s http://127.0.0.1:4416/ping && echo " <- bgutil PO-token server is UP" || echo "::warning::bgutil server did not respond; continuing without PO tokens"
       - name: Restore clipper model cache
         id: model-cache
         uses: actions/cache/restore@v4
