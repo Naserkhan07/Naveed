@@ -141,6 +141,7 @@ class VideoDownloader:
         """
         client_ladders: tuple[tuple[str, ...], ...] = (
             ("android_vr",),
+            ("ios",),
             ("tv_embedded",),
             ("tv",),
             ("mweb", "web_safari"),
@@ -154,10 +155,36 @@ class VideoDownloader:
             # App/TV clients often expose only a single progressive stream
             # (e.g. android_vr serving format 18), so allow the "best" fallback.
             retry_options["format"] = "bestvideo+bestaudio/best"
+            # Web-only challenge machinery (EJS/deno) hurts the app/TV clients'
+            # similarity to real devices.
+            retry_options.pop("js_runtimes", None)
             try:
+                print(f"[botwall] trying player client(s): {','.join(clients)}", flush=True)
                 return self._extract_info(url, retry_options)
             except yt_dlp.utils.DownloadError as retry_exc:
                 last_detail = str(retry_exc)
+                print(
+                    f"[botwall] {','.join(clients)} failed: {last_detail[:120]}",
+                    flush=True,
+                )
+        # Last resort: the account session itself can be the flagged variable
+        # (home-IP cookies surfacing on a datacenter IP). Try the phone client
+        # anonymously before giving up.
+        anon_options = dict(options)
+        anon_options.pop("cookiefile", None)
+        anon_options.pop("cookiesfrombrowser", None)
+        anon_options["extractor_args"] = {"youtube": {"player_client": ["android_vr"]}}
+        anon_options["format"] = "bestvideo+bestaudio/best"
+        anon_options.pop("js_runtimes", None)
+        try:
+            print("[botwall] trying anonymous android_vr", flush=True)
+            return self._extract_info(url, anon_options)
+        except yt_dlp.utils.DownloadError as anon_exc:
+            last_detail = str(anon_exc)
+            print(
+                f"[botwall] anonymous android_vr failed: {last_detail[:120]}",
+                flush=True,
+            )
         raise DownloadError(
             "YouTube download failed: "
             f"{self._download_error_detail(last_detail)}"
