@@ -286,10 +286,13 @@ repo: it never contains tokens or secrets, only clip titles, progress, and post 
    Pages URL on that first run; every 15-minute tick keeps everything moving.
 
 Schedules, timezone, and per-slot volumes live in the workflow's `env:` block (edit
-them like `.env`); `HOTCLIP_CLOUD: "true"` enables experimental cloud clipping via
-HotClip's headless CLI (AGPL source cloned at runtime, never vendored here — failures
-never block publishing the backlog). Meta long-lived tokens still expire ~60 days:
-refresh them like before.
+them like `.env`). **Cloud clipping is enabled by default** (`HOTCLIP_CLOUD: "true"`):
+HotClip's headless CLI (AGPL source cloned at runtime, never vendored here) turns each
+run's downloaded sources into finished Shorts on the runner — up to 8 per tick (any
+backlog catches up over subsequent ticks), a clipping failure never blocks publishing,
+and successfully clipped sources are deleted so the state cache stays lean enough to
+run forever. Set `HOTCLIP_CLOUD: "false"` in the workflow env to disable clipping.
+Meta long-lived tokens still expire ~60 days: refresh them like before.
 
 The local watcher path (sections 5–7) stays fully supported for anyone who prefers
 an always-on PC; the localhost panel and the Pages dashboard are the same page.
