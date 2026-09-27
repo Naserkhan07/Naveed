@@ -128,6 +128,37 @@ class VideoDownloader:
             raise DownloadError("YouTube returned no video metadata.")
         return info
 
+    def _extract_with_rotated_clients(
+        self,
+        url: str,
+        options: dict[str, object],
+    ) -> dict[str, object]:
+        """Retry extraction via alternate YouTube player clients, keeping cookies.
+
+        Datacenter-IP bot walls are player-client specific: the default web client
+        gets "Sign in to confirm you're not a bot" while the TV client and the
+        EJS-backed mobile-web/Safari clients often still extract successfully.
+        """
+        client_ladders: tuple[tuple[str, ...], ...] = (
+            ("tv",),
+            ("tv", "web_safari"),
+            ("mweb", "web_safari"),
+        )
+        last_detail = "no extractor detail available"
+        for clients in client_ladders:
+            retry_options = dict(options)
+            retry_options["extractor_args"] = {
+                "youtube": {"player_client": list(clients)}
+            }
+            try:
+                return self._extract_info(url, retry_options)
+            except yt_dlp.utils.DownloadError as retry_exc:
+                last_detail = str(retry_exc)
+        raise DownloadError(
+            "YouTube download failed: "
+            f"{self._download_error_detail(last_detail)}"
+        )
+
     def _download_error_detail(self, detail: str) -> str:
         normalized = detail.casefold()
         if "failed to decrypt with dpapi" in normalized:
@@ -169,7 +200,11 @@ class VideoDownloader:
         except yt_dlp.utils.DownloadError as exc:
             detail = str(exc)
             authenticated = "cookiefile" in options or "cookiesfrombrowser" in options
-            if "requested format is not available" in detail.casefold() and authenticated:
+            if "sign in to confirm" in detail.casefold() and authenticated:
+                # The bot wall is player-client specific on datacenter IPs. Rotate
+                # clients (cookies kept) before reporting a stale-cookie error.
+                info = self._extract_with_rotated_clients(url, options)
+            elif "requested format is not available" in detail.casefold() and authenticated:
                 # Account cookies can occasionally be assigned a YouTube client experiment that
                 # exposes only SABR/image formats. Retry the exact same bestvideo+bestaudio
                 # selector without authentication; this often restores normal public streams.

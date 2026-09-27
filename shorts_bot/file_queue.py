@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import os
+import random
 import re
 import sys
 from contextlib import suppress
@@ -257,6 +258,7 @@ async def run_file_queue(
             if url in failures:
                 continue
             processed = True
+            await asyncio.sleep(random.uniform(2.0, 5.0))
             destination = await coordinator.deliver_source(url)
             if destination is None:
                 failures.add(url)
@@ -304,6 +306,7 @@ async def run_file_queue(
             if video.url in failures:
                 continue
             processed = True
+            await asyncio.sleep(random.uniform(2.0, 5.0))
             print(
                 f"[channel] new upload from {video.channel_key}: {video.title} ({video.url})",
                 flush=True,
