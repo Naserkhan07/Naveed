@@ -42,13 +42,14 @@ def main() -> int:
     for old in snapshots[:-keep] if keep > 0 else []:
         old.unlink(missing_ok=True)
 
-    print(f"[backup] wrote {dest.name} ({len(snapshots[-keep:]) if keep > 0 else len(snapshots)} kept)")
+    kept = snapshots[-keep:] if keep > 0 else snapshots
+    print(f"[backup] wrote {dest.name} ({len(kept)} kept)")
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"[backup] failed: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
