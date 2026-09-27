@@ -83,9 +83,12 @@ env:
   # window plus a run_finished_at marker drives the RUNNING / IDLE badge.
   STATUS_PANEL_ENABLED: "false"
   STATUS_STALE_AFTER_SECONDS: "2700" # 45 min covers the 15-min cron + delays
-  # Experimental: clip in GitHub via HotClip's headless CLI (AGPL source cloned
-  # at runtime, never vendored here). A clipping failure never blocks publishing.
-  HOTCLIP_CLOUD: "false"
+  # Cloud clipping is ON: HotClip's headless CLI (AGPL source cloned at runtime,
+  # never vendored here) turns downloaded sources into finished Shorts on the
+  # runner. A clipping failure never blocks publishing the backlog. Successfully
+  # clipped sources are deleted afterwards so the state cache stays lean enough
+  # to run forever inside GitHub's cache quota. Set to "false" to disable.
+  HOTCLIP_CLOUD: "true"
   HOTCLIP_REPO: "https://github.com/xixihhhh/hotclip"
   RUN_STAGES: ${{ inputs.stages || 'download,channels,intake,publish' }}
 
@@ -270,14 +273,22 @@ jobs:
         if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'success'
         continue-on-error: true # a clipping failure must never block publishing the backlog
         working-directory: hotclip-app
+        env:
+          MAX_CLIPS_PER_RUN: "8" # bounds each run; any backlog catches up over the next ticks
         run: |
           shopt -s nullglob
-          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv; do
+          n=0
+          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv ../hotclip-watch/*.webm ../hotclip-watch/*.m4v; do
             [ -e "$src" ] || continue
             [ -e "$src.clipped" ] && continue
+            [ "$n" -ge "$MAX_CLIPS_PER_RUN" ] && { echo "Per-run clip cap reached; remaining sources wait for the next tick."; break; }
             echo "=== HotClip clipping: $src ==="
             if pnpm cli clip "$src" --out "../hotclip-exports" --json; then
               touch "$src.clipped"
+              n=$((n + 1))
+              # The finished clips + their queue entries live elsewhere now;
+              # drop the bulky source so the saved state stays small.
+              rm -f "$src" "$src.clipped"
             else
               echo "::warning::HotClip failed on $src; it will be retried next run."
             fi
