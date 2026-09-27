@@ -140,8 +140,9 @@ class VideoDownloader:
         EJS-backed mobile-web/Safari clients often still extract successfully.
         """
         client_ladders: tuple[tuple[str, ...], ...] = (
+            ("android_vr",),
+            ("tv_embedded",),
             ("tv",),
-            ("tv", "web_safari"),
             ("mweb", "web_safari"),
         )
         last_detail = "no extractor detail available"
@@ -150,6 +151,9 @@ class VideoDownloader:
             retry_options["extractor_args"] = {
                 "youtube": {"player_client": list(clients)}
             }
+            # App/TV clients often expose only a single progressive stream
+            # (e.g. android_vr serving format 18), so allow the "best" fallback.
+            retry_options["format"] = "bestvideo+bestaudio/best"
             try:
                 return self._extract_info(url, retry_options)
             except yt_dlp.utils.DownloadError as retry_exc:
