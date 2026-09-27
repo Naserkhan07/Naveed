@@ -78,14 +78,49 @@ compute — say the word and I'll add that path too.)
 
 ## One-time setup
 
-### 1. Point gcloud at your project
+### Easiest way — Cloud Shell (nothing to install, works on any OS ✅ recommended)
+
+Google's own terminal runs in your browser with `gcloud` already installed and
+signed in — no local installs, works identically on Windows/Mac/Linux:
+
+1. Open **https://shell.cloud.google.com/** and sign in with your Google account.
+2. Clone and deploy:
+   ```bash
+   git clone https://github.com/Naserkhan07/Naveed && cd Naveed
+   gcloud config set project YOUR_PROJECT_ID
+   bash cloudrun/deploy.sh
+   ```
+3. When it asks / fails on secrets (step 2 below), upload your credential files
+   into `cloudrun/secrets/` using Cloud Shell's **⋮ → Upload** button (or create
+   them with `nano cloudrun/secrets/instagram_access_token.txt`), then re-run
+   `bash cloudrun/deploy.sh`.
+
+When the terminal prints the dashboard URL, you're done — close the tab; the
+service keeps running in your project 24/7. The first build takes several
+minutes (it installs HotClip's native toolchain); later builds are much faster.
+
+### Or: run it from your own computer
+
+#### Windows (PowerShell, no Git Bash needed)
+
+```powershell
+cd path\to\Naveed
+.\cloudrun\deploy.ps1 -Project YOUR_PROJECT_ID
+```
+
+(Steps 1–2 below still apply: `gcloud auth login` first, and put secrets in
+`cloudrun/secrets\`.)
+
+#### Windows (Git Bash / WSL), Mac, Linux
+
+1. **Point gcloud at your project**
 
 ```bash
 gcloud config set project YOUR_PROJECT_ID
 gcloud auth login
 ```
 
-### 2. Put your secrets in `cloudrun/secrets/` (gitignored)
+2. **Put your secrets in `cloudrun/secrets/` (gitignored)**
 
 Create the folder and drop in whichever credentials you have. Missing files are
 fine — the matching platform just stays off until you add it.
@@ -240,5 +275,6 @@ gcloud storage rm -r gs://YOUR_BUCKET
 | `clip_loop.sh` | Runs HotClip's headless CLI over the watch folder |
 | `backup_loop.sh` + `backup_db.py` | Periodic SQLite snapshots to the bucket |
 | `autopilot.env.yaml` | Non-secret env (schedules, flags, paths) |
-| `deploy.sh` | One-command: APIs, bucket, SA, secrets, build, deploy |
+| `deploy.sh` | One-command: APIs, bucket, SA, secrets, build, deploy (bash/Cloud Shell) |
+| `deploy.ps1` | Same one-command deploy for Windows PowerShell |
 | `secrets/` | **You put credentials here (gitignored)** |
