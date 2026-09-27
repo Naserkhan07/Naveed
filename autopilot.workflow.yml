@@ -273,14 +273,22 @@ jobs:
         if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'success'
         continue-on-error: true # a clipping failure must never block publishing the backlog
         working-directory: hotclip-app
+        env:
+          MAX_CLIPS_PER_RUN: "8" # bounds each run; any backlog catches up over the next ticks
         run: |
           shopt -s nullglob
-          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv; do
+          n=0
+          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv ../hotclip-watch/*.webm ../hotclip-watch/*.m4v; do
             [ -e "$src" ] || continue
             [ -e "$src.clipped" ] && continue
+            [ "$n" -ge "$MAX_CLIPS_PER_RUN" ] && { echo "Per-run clip cap reached; remaining sources wait for the next tick."; break; }
             echo "=== HotClip clipping: $src ==="
             if pnpm cli clip "$src" --out "../hotclip-exports" --json; then
               touch "$src.clipped"
+              n=$((n + 1))
+              # The finished clips + their queue entries live elsewhere now;
+              # drop the bulky source so the saved state stays small.
+              rm -f "$src" "$src.clipped"
             else
               echo "::warning::HotClip failed on $src; it will be retried next run."
             fi
