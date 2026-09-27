@@ -1,19 +1,20 @@
 # Shorts Autopilot — the whole automation lives on GitHub. Nothing runs locally.
 #
 #   quality gate → publish prepared clips whose platform schedules are due →
-#   harvest recent unseen channel uploads → clip into vertical Shorts → queue
-#   clips for the next slot → refresh the online dashboard.
+#   harvest recent unseen channel uploads → HotClip cloud clipping → queue clips
+#   for the next slot → refresh the online dashboard.
 #
 # It wakes every 15 minutes (cron can be delayed — the credit-based scheduler
-# just publishes what is owed when a run happens, so nothing is ever lost).
-# All requirements (Python deps + the clipper's whisper model) are installed
-# and pre-downloaded up front and cached between runs, so runs start fast.
-# Clipping uses the built-in clipper (shorts_bot/clipper.py): faster-whisper
-# transcription, highlight selection, face-guided 9:16 reframe, word-synced
-# captions, -14 LUFS loudness — plain pip deps plus the runner's preinstalled
-# ffmpeg (no fragile native toolchains). The dashboard is republished to
-# GitHub Pages after every run, and a tiny monthly keepalive commit stops
-# GitHub from disabling scheduled runs on idle repos.
+# just publishes what is owed when a run happens, so nothing is ever lost) and the
+# HotClip toolchain persists between runs through GitHub caches, the dashboard
+# is republished to GitHub Pages after every run, and a tiny monthly keepalive
+# commit stops GitHub from disabling scheduled runs on idle repos.
+#
+# ONE-TIME SETUP (about 3 minutes, all in the GitHub web UI):
+#   1. Settings → Pages → Build and deployment → Source: "GitHub Actions".
+#      Your dashboard goes live at https://<your-user>.github.io/<this-repo>/
+#   2. Settings → Secrets and variables → Actions → add the secrets below.
+#   3. Actions tab → enable workflows if asked → "Run workflow" once manually.
 #
 # Secrets (Settings → Secrets and variables → Actions):
 #   YOUTUBE_TOKEN_JSON       contents of your local youtube_token.json
@@ -24,6 +25,10 @@
 #   YTDLP_COOKIES_TXT        Netscape-format YouTube cookies — runners are datacenter
 #                            IPs, and YouTube demands "not a bot" without them;
 #                            export from a signed-in browser session
+#
+# NOTE: the dashboard is a public page on a public repo. It never shows tokens
+# or secrets — only clip titles, schedule progress, and post links — but keep
+# that in mind before switching anything sensitive on.
 
 name: Autopilot
 
@@ -78,15 +83,13 @@ env:
   # window plus a run_finished_at marker drives the RUNNING / IDLE badge.
   STATUS_PANEL_ENABLED: "false"
   STATUS_STALE_AFTER_SECONDS: "2700" # 45 min covers the 15-min cron + delays
-  # Clipping is handled by the built-in clipper (shorts_bot/clipper.py):
-  # faster-whisper picks the highlight, ffmpeg reframes to 9:16 with a
-  # face-guided crop, burns word-synced captions and normalizes to -14 LUFS.
-  # A clipping failure never blocks publishing the backlog, and successfully
-  # clipped sources are deleted so the state cache stays lean enough to run
-  # forever inside GitHub's cache quota.
-  CLIP_WHISPER_MODEL: "base" # multilingual; "small" = better Hindi, slower
-  CLIP_TARGET_SECONDS: "45"
-  CLIP_MAX_PER_RUN: "4" # per-run cap; any backlog catches up over next ticks
+  # Cloud clipping is ON: HotClip's headless CLI (AGPL source cloned at runtime,
+  # never vendored here) turns downloaded sources into finished Shorts on the
+  # runner. A clipping failure never blocks publishing the backlog. Successfully
+  # clipped sources are deleted afterwards so the state cache stays lean enough
+  # to run forever inside GitHub's cache quota. Set to "false" to disable.
+  HOTCLIP_CLOUD: "true"
+  HOTCLIP_REPO: "https://github.com/xixihhhh/hotclip"
   RUN_STAGES: ${{ inputs.stages || 'download,channels,intake,publish' }}
 
 jobs:
@@ -126,29 +129,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install all requirements (bot + clipper, pip-cached)
+      - name: Install the bot
         run: |
           python -m pip install -U pip
-          pip install -e ".[clipper]"
-
-      - name: Restore clipper model cache
-        id: model-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/huggingface
-          key: clipper-whisper-${{ env.CLIP_WHISPER_MODEL }}-v1
-          restore-keys: clipper-whisper-
-
-      - name: Pre-download the clipper AI model (first run only, then cached)
-        run: python -m shorts_bot.clipper warmup
-
-      - name: Save clipper model cache (first run only)
-        if: steps.model-cache.outputs.cache-hit != 'true'
-        continue-on-error: true # re-saving an existing key warns; harmless
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/huggingface
-          key: clipper-whisper-${{ env.CLIP_WHISPER_MODEL }}-v1
+          pip install -e .
 
       - name: Restore autopilot state (queue DB, watch folder, exports)
         uses: actions/cache/restore@v4
@@ -159,6 +143,17 @@ jobs:
             hotclip-exports/
           key: autopilot-state-${{ github.run_id }}
           restore-keys: autopilot-state-
+
+      - name: Restore HotClip toolchain cache
+        id: hotclip-cache
+        if: env.HOTCLIP_CLOUD == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            hotclip-app/
+            ~/.cache/
+          key: hotclip-toolchain-v2
+          restore-keys: hotclip-toolchain-
 
       - name: Write secrets and pick enabled platforms
         env:
@@ -185,4 +180,187 @@ jobs:
               echo "YTDLP_COOKIE_FILE=work/ytdlp-cookies.txt"
             fi
             if [ -n "$INSTAGRAM_USER_ID" ] && [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; then
-              echo "INSTAGRAM_USER
+              echo "INSTAGRAM_USER_ID=$INSTAGRAM_USER_ID"
+              echo "UPLOAD_INSTAGRAM=true"
+            else
+              echo "UPLOAD_INSTAGRAM=false"
+              echo "::warning::Instagram secrets missing; Instagram publishing disabled."
+            fi
+            if [ -n "$FACEBOOK_PAGE_ID" ] && { [ -n "$FACEBOOK_ACCESS_TOKEN" ] || [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; }; then
+              echo "FACEBOOK_PAGE_ID=$FACEBOOK_PAGE_ID"
+              echo "UPLOAD_FACEBOOK=true"
+            else
+              echo "UPLOAD_FACEBOOK=false"
+              echo "::warning::Facebook secrets missing; Facebook publishing disabled."
+            fi
+          } >> "$GITHUB_ENV"
+          if [ -z "$YTDLP_COOKIES_TXT" ]; then
+            echo "::warning::YTDLP_COOKIES_TXT secret is not set. GitHub runners use datacenter IPs; YouTube downloads will fail with 'Sign in to confirm you are not a bot' until a Netscape-format cookie export is added (Settings → Secrets and variables → Actions → New repository secret: YTDLP_COOKIES_TXT)."
+          fi
+
+      - name: Split requested stages
+        run: |
+          S=",${RUN_STAGES},"
+          HARVEST=""; PUBLISH=""
+          case "$S" in *,download,*) HARVEST="download";; esac
+          case "$S" in *,channels,*) HARVEST="${HARVEST:+$HARVEST,}channels";; esac
+          case "$S" in *,intake,*) PUBLISH="intake";; esac
+          case "$S" in *,publish,*) PUBLISH="${PUBLISH:+$PUBLISH,}publish";; esac
+          {
+            echo "HARVEST_STAGES=$HARVEST"
+            echo "PUBLISH_STAGES=$PUBLISH"
+            if [ -n "$HARVEST$PUBLISH" ]; then echo "CLIPPING_NEEDED=true"; else echo "CLIPPING_NEEDED=false"; fi
+          } >> "$GITHUB_ENV"
+          echo "harvest stages: ${HARVEST:-none} | publish stages: ${PUBLISH:-none}"
+
+      - name: Download new channel uploads into the watch folder
+        if: env.HARVEST_STAGES != '' && github.event_name != 'push'
+        continue-on-error: true # datacenter IPs can be throttled; the backlog stays queued
+        run: python main.py --once --stages "$HARVEST_STAGES"
+
+      - name: Install Node.js and pnpm (cloud clipping)
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch and install HotClip (AGPL, used as an external tool)
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true'
+        id: hotclip-install
+        continue-on-error: true
+        run: |
+          corepack enable
+          if [ ! -d hotclip-app ]; then
+            git clone --depth 1 "$HOTCLIP_REPO" hotclip-app
+          fi
+          cd hotclip-app
+          # Wipe any partially-installed node_modules left by a prior failed
+          # install (ERR_PNPM_IGNORED_BUILDS) so pnpm starts from a clean state
+          # rather than re-detecting incomplete packages.
+          if [ -d node_modules ] && [ ! -d node_modules/.pnpm ]; then
+            echo "Wiping incomplete node_modules from a prior failed install…"
+            rm -rf node_modules
+          fi
+          # Allow native build scripts ONLY for the packages that actually need
+          # them (esbuild downloads a platform binary; ffmpeg-static and the
+          # @ffprobe-installer/* packages ship native binaries; onnxruntime-node
+          # has a native addon). Avoids a blanket --ignore-scripts=false which
+          # would run every dependency's install script.
+          pnpm install --frozen-lockfile=false \
+            --config.onlyBuiltDependencies=esbuild,ffmpeg-static,onnxruntime-node,@ffprobe-installer/ffprobe,@ffprobe-installer/linux-x64,@ffprobe-installer/darwin-arm64,@ffprobe-installer/darwin-x64,@ffprobe-installer/win32-x64
+        env:
+          # pnpm >=10 refuses to run install scripts unless they are explicitly
+          # allowed; mirror the allow-list via env so nested invocations honour it.
+          PNPM_CONFIG_ONLY_BUILT_DEPENDENCIES: "esbuild,ffmpeg-static,onnxruntime-node,@ffprobe-installer/ffprobe,@ffprobe-installer/linux-x64,@ffprobe-installer/darwin-arm64,@ffprobe-installer/darwin-x64,@ffprobe-installer/win32-x64"
+
+      - name: Check HotClip install result
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'failure'
+        id: hotclip-check
+        run: |
+          echo "::warning::HotClip install failed — skipping clipping this run. Publishing and dashboard refresh continue."
+          echo "CLIPPING_NEEDED=false" >> "$GITHUB_ENV"
+          echo "HOTCLIP_INSTALL_FAILED=1" >> "$GITHUB_ENV"
+          {
+            echo "### ⚠️ HotClip install failed"
+            echo
+            echo "The native toolchain (esbuild, ffmpeg-static, onnxruntime-node, ffprobe-installer)"
+            echo "could not be built this run. Clipping was skipped; **publishing of already-queued"
+            echo "clips and dashboard deployment still ran**. The run will be marked failed so the"
+            echo "problem is visible in Actions — it auto-retries on the next cron tick (≤15 min)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clip every pending source with HotClip
+        if: env.HOTCLIP_CLOUD == 'true' && env.CLIPPING_NEEDED == 'true' && steps.hotclip-install.outcome == 'success'
+        continue-on-error: true # a clipping failure must never block publishing the backlog
+        working-directory: hotclip-app
+        env:
+          MAX_CLIPS_PER_RUN: "8" # bounds each run; any backlog catches up over the next ticks
+        run: |
+          shopt -s nullglob
+          n=0
+          for src in ../hotclip-watch/*.mp4 ../hotclip-watch/*.mov ../hotclip-watch/*.mkv ../hotclip-watch/*.webm ../hotclip-watch/*.m4v; do
+            [ -e "$src" ] || continue
+            [ -e "$src.clipped" ] && continue
+            [ "$n" -ge "$MAX_CLIPS_PER_RUN" ] && { echo "Per-run clip cap reached; remaining sources wait for the next tick."; break; }
+            echo "=== HotClip clipping: $src ==="
+            if pnpm cli clip "$src" --out "../hotclip-exports" --json; then
+              touch "$src.clipped"
+              n=$((n + 1))
+              # The finished clips + their queue entries live elsewhere now;
+              # drop the bulky source so the saved state stays small.
+              rm -f "$src" "$src.clipped"
+            else
+              echo "::warning::HotClip failed on $src; it will be retried next run."
+            fi
+          done
+
+      - name: Queue finished clips and publish what is due
+        if: env.PUBLISH_STAGES != ''
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+        run: python main.py --once --stages "$PUBLISH_STAGES"
+
+      - name: Save autopilot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            work/
+            hotclip-watch/
+            hotclip-exports/
+          key: autopilot-state-${{ github.run_id }}
+
+      - name: Save HotClip toolchain cache (first run only)
+        if: always() && env.HOTCLIP_CLOUD == 'true' && steps.hotclip-cache.outputs.cache-hit != 'true'
+        continue-on-error: true # re-saving an existing key warns; harmless
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            hotclip-app/
+            ~/.cache/
+          key: hotclip-toolchain-v2
+
+      - name: Export the online status dashboard
+        if: always()
+        run: python -m shorts_bot.pages_export --out site
+
+      - name: Upload dashboard artifact
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      - name: Deploy dashboard to GitHub Pages
+        if: always()
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Mark run failed if HotClip install did not complete
+        if: always() && env.HOTCLIP_INSTALL_FAILED == '1'
+        run: |
+          echo "Failing the job so the install problem surfaces in Actions; dashboard has already been deployed."
+          exit 1
+
+  keepalive:
+    name: Keep scheduled automation alive (monthly)
+    if: github.event_name == 'schedule' && github.event.schedule == '0 0 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push an empty keepalive commit
+        # GitHub disables scheduled workflows after ~60 days without commits;
+        # one tiny monthly commit on a dedicated branch resets that clock.
+        run: |
+          set -e
+          git config user.name "autopilot-keepalive[bot]"
+          git config user.email "autopilot-keepalive[bot]@users.noreply.github.com"
+          if git fetch origin autopilot-keepalive; then
+            git checkout -B autopilot-keepalive origin/autopilot-keepalive
+          else
+            git checkout -b autopilot-keepalive
+          fi
+          git commit --allow-empty -m "chore: keep scheduled automation alive ($(date -u +%Y-%m))"
+          git push -q origin autopilot-keepalive
