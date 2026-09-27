@@ -66,16 +66,81 @@ Headless alternative: clone the HotClip repo and drive
 
 ## 2. Install this bot
 
+### Get the code (clone or refresh)
+
+Windows PowerShell 5.1 chains with `;` keep going **after** a command fails, so a failed
+`git clone` silently leaves you installing in the wrong folder. Paste this instead — it is
+one script block, so the first failure stops everything and says why:
+
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
+& {
+  Set-Location $HOME
+  if (Test-Path .\Naveed\.git) {
+    Set-Location .\Naveed
+    git fetch origin
+    if ($LASTEXITCODE -ne 0) { throw "git fetch failed - check network / GitHub sign-in." }
+    git reset --hard origin/main
+  } elseif (Test-Path .\Naveed) {
+    throw ".\Naveed exists but is not a git clone. Move it aside: Rename-Item .\Naveed .\Naveed-old"
+  } else {
+    git clone https://github.com/Naserkhan07/Naveed.git; Set-Location .\Naveed
+  }
+  if (-not (Test-Path .\pyproject.toml)) { throw "No pyproject.toml in $(Get-Location) - not the repo root." }
+  if (-not (Test-Path .\.venv)) { python -m venv .venv }
+  $py = ".\.venv\Scripts\python.exe"
+  & $py -c "import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)"
+  if ($LASTEXITCODE -ne 0) { throw "venv is $(& $py --version); need Python 3.11-3.13. Fix: Remove-Item -Recurse -Force .venv" }
+  & $py -m pip install -U pip
+  & $py -m pip install -e ".[dev,clipper]"
+  "Setup OK in $(Get-Location)"
+}
 ```
 
-macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate`.
+> `git reset --hard origin/main` discards local commits and edits. Gitignored runtime files
+> survive it: `.env`, `.venv/`, `*.db`, `client_secret*.json`, `youtube_token.json`, cookies.
 
-Also install FFmpeg (only `ffprobe` is needed now) —
+macOS/Linux (chained with `&&`, so a failure stops the rest):
+
+```bash
+cd ~ && if [ -d Naveed/.git ]; then cd Naveed && git fetch origin && git reset --hard origin/main; \
+  else git clone https://github.com/Naserkhan07/Naveed.git && cd Naveed; fi
+test -f pyproject.toml || { echo "No pyproject.toml - not the repo root"; exit 1; }
+python3 -m venv .venv && .venv/bin/python -m pip install -U pip \
+  && .venv/bin/pip install -e ".[dev,clipper]"
+```
+
+Then create your env file — `Copy-Item .env.example .env` (macOS/Linux:
+`cp .env.example .env`) — and fill it in per the configuration reference below.
+
+### Python version
+
+**3.11 – 3.13.** `pyproject.toml` requires `>=3.11,<3.14`, and `main.py` refuses to start on
+3.14 (the Chrome PO-token provider does not support it). Check with
+`.\.venv\Scripts\python.exe --version`.
+
+### Which extras
+
+| Extra | Installs | When you need it |
+| --- | --- | --- |
+| `.[dev]` | pytest, pytest-asyncio, ruff | Always — tests and lint |
+| `.[clipper]` | faster-whisper, opencv-python-headless | The built-in cloud clipper (`shorts_bot/clipper.py`, used by the GitHub workflow) instead of the HotClip desktop app |
+| `.[dev,clipper]` | both | Recommended local setup |
+
+The base dependencies are installed either way; heavy clipper imports stay lazy, so
+`.[dev]` alone is enough if HotClip does your clipping.
+
+Activate the venv, and if you installed the `clipper` extra, pre-download its whisper model
+once so the first clip is not slowed by the fetch (default model is `base`; the workflow's
+`CLIP_WHISPER_MODEL=small` is better for Hindi, slower):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m shorts_bot.clipper warmup        # pre-download the whisper model (clipper extra)
+```
+
+macOS/Linux: `source .venv/bin/activate`.
+
+Also install FFmpeg (only `ffprobe` is needed now, plus `ffmpeg` for the built-in clipper) —
 `winget install Gyan.FFmpeg` / `brew install ffmpeg` / `sudo apt install ffmpeg`.
 
 ## 3. Connect your accounts
@@ -361,6 +426,21 @@ an always-on PC; the localhost panel and the Pages dashboard are the same page.
 
 ## Troubleshooting
 
+- **`ERROR: ... does not appear to be a Python project: neither 'setup.py' nor
+  'pyproject.toml' found`:** pip is not running in the repo root — usually because an
+  earlier `git clone` was skipped (the folder already existed) and, on Windows PowerShell
+  5.1, `;` chains keep executing after a failure. Check `Test-Path .\pyproject.toml`
+  (`ls pyproject.toml` on macOS/Linux); if it is missing, see the next bullet. Re-run the
+  guarded block in section 2 instead of a `;`-chained one-liner.
+- **`fatal: destination path 'Naveed' already exists and is not an empty directory.`:**
+  something is already at that path. If it is a clone of this repo (`git remote -v` shows
+  `Naserkhan07/Naveed`), refresh it in place with `git fetch origin; git reset --hard
+  origin/main` — gitignored runtime files (`.env`, `.venv/`, `*.db`, tokens, cookies)
+  survive. If it is an unrelated folder, move it aside (`Rename-Item .\Naveed .\Naveed-old`)
+  and clone again.
+- **`Python 3.14 is not supported by the Chrome PO-token provider`:** recreate the venv on
+  Python 3.11–3.13 — `Remove-Item -Recurse -Force .venv; py -3.13 -m venv .venv`, then
+  reinstall. Confirm with `.\.venv\Scripts\python.exe --version`.
 - **"Sign in to confirm you're not a bot" (YouTube download):** export Netscape cookies to
   `youtube-cookies.txt` and set `YTDLP_COOKIE_FILE=youtube-cookies.txt`, or use
   `YTDLP_COOKIES_FROM_BROWSER=firefox`.
