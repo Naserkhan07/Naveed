@@ -46,6 +46,8 @@ LLM order: the seat's own endpoint (Ollama / OpenAI-compatible URL) → keyless 
 
 There is no offline chat mode and no API keys. A question goes to the server, which tries the seat's own endpoint, then the keyless free chain (Pollinations, LLM7; each with its own 20 s breaker). If the server has no internet, it returns the finished prompt (persona + live floor status + history) and **your browser** sends it to the same keyless providers (`frontend/src/llm.ts`), then reports the reply back so history and the chatroom stay in sync. If neither can reach a model, the desk says so plainly and does not guess.
 
-Cabin verdicts run on the server, so without server-side internet they use the quantitative rule-check, every such vote labelled `rules:no-LLM`. Run the backend on Kaggle / your PC (or point seats at Ollama) to have LLMs judge every trade.
+**Every verdict is made by a real language model.** Cabin votes, the CEO ruling and the fly's debate run on the server. If the server has no internet, they are queued and **any open browser page relays them** (`frontend/src/relay.ts` polls `/api/relay/next`, calls the keyless free model, posts to `/api/relay/result`; 3 in parallel, retrying rate-limit errors). Tickets simply wait at their cabin until a model has ruled — there is no rule-based stand-in and no timeout. The footer shows "⏳ N verdicts waiting for a language model" while that happens. Keep the page open (it is the relay); running the backend on Kaggle / your PC or pointing seats at Ollama makes it independent of the browser.
+
+The only exception is the Settings toggle *LLM judges = off* (and the headless test harness), which uses the quantitative rule-check, labelled `rules:no-LLM`. `tests/mock_relay.py` stands in for the browser relay in tests.
 
 `POST /api/llm/diagnose` and the *Check LLM connection* button (Settings → LLM seats) test both the server path and the browser path and show each error.

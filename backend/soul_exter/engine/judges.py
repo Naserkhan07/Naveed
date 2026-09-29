@@ -6,8 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 
 import numpy as np
 
@@ -126,15 +127,22 @@ def _num(v, lo=0, hi=100, default=0) -> int:
         return default
 
 
-def parse_vote(text: str) -> dict | None:
-    """-> {approve, confidence, thesis, risk, reason} or None"""
+def parse_vote(text: str, loose: bool = False) -> dict | None:
+    """-> {approve, confidence, thesis, risk, reason} or None. loose=True also accepts a plain-prose answer that clearly says approve/reject."""
     m = re.search(r"\{.*\}", text or "", re.S)
     try:
         j = json.loads(m.group(0)) if m else None
     except Exception:       # noqa: BLE001
         j = None
     if not isinstance(j, dict):
-        return None
+        if not loose:
+            return None
+        low = (text or "").lower()
+        ap, rj = len(re.findall(r"\bapprov|\baccept|\bproceed|\btake the trade", low)), len(re.findall(r"\breject|\bdecline|\bpass on|\bstand down|\bdo not take", low))
+        if ap == rj:
+            return None
+        body = re.sub(r"\s+", " ", text).strip()
+        return {"approve": ap > rj, "confidence": 60, "thesis": body[:260], "risk": "", "reason": body[:220]}
     v = str(j.get("vote", "")).lower()
     if v.startswith(("appr", "yes", "buy", "long", "enter", "accept")):
         ap = True
@@ -167,22 +175,28 @@ def enrich(seat: str, t: Ticket, approve: bool, score: float, why: str) -> tuple
 class JudgeService:
     def __init__(self, router: LLMRouter):
         self.router = router
-        self.pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="judge")
         self.bias: dict[str, float] = {s: 0.0 for s in JUDGES + ["NAVEED"]}       # learned calibration (realised R)
         self.notes: dict[str, list[str]] = {s: [] for s in JUDGES + ["NAVEED"]}    # takeaways from the debate room
         self.record = ""                                                            # one-line track record for prompts
         self.learned = 0
 
     def llm_possible(self) -> bool:
-        import os
+        """True = every verdict is made by a real language model (the floor waits for it). False only when the operator has
+        switched the LLM off in Settings (or in the offline test harness): then the quantitative rule-check votes, labelled."""
         r = self.router
-        if not r.enabled or r.force_offline:
-            return False
-        if any(c["provider"] != "auto" and c["base_url"] for c in r.cfg.values()):
-            return True
-        if r.free_enabled and r.breaker.allow():
-            return True
-        return False
+        return bool(r.enabled and not r.force_offline)
+
+    def spawn(self, fn) -> Future:
+        """run fn on a daemon thread (calls may wait a long time for a model; they must never block interpreter exit)"""
+        f: Future = Future()
+
+        def run():
+            try:
+                f.set_result(fn())
+            except BaseException as e:      # noqa: BLE001
+                f.set_exception(e)
+        threading.Thread(target=run, daemon=True, name="llm-call").start()
+        return f
 
     # ------------------------------------------------------------- learning
     def learn(self, t: Ticket):
@@ -224,15 +238,14 @@ class JudgeService:
 
         def work() -> Vote:
             t0 = time.time()
-            text, label = self.router.complete(seat, judge_prompt(seat, t, prior, notes, rec), max_tokens=220)
-            if text:
-                pv = parse_vote(text)
-                if pv:
-                    return Vote(seat, cabin, pv["approve"], score, pv["reason"] or why, label, int((time.time() - t0) * 1000),
-                                pv["confidence"], pv["thesis"] or thesis, pv["risk"] or risk)
-            return Vote(seat, cabin, base.approve, score, why, "rules:no-LLM", int((time.time() - t0) * 1000), conf, thesis, risk)
+            msgs = judge_prompt(seat, t, prior, notes, rec)
+            pv, label = self.router.complete_wait(seat, msgs, lambda txt, loose: parse_vote(txt, loose), max_tokens=220)
+            if not pv:
+                raise RuntimeError("stopped")
+            return Vote(seat, cabin, pv["approve"], score, pv["reason"] or why, label, int((time.time() - t0) * 1000),
+                        pv["confidence"], pv["thesis"] or thesis, pv["risk"] or risk)
 
-        return self.pool.submit(work)
+        return self.spawn(work)
 
     def ceo(self, t: Ticket, crowd: int) -> Future | dict:
         mean = float(np.mean([v.score for v in t.votes])) if t.votes else 0.0
@@ -252,12 +265,10 @@ class JudgeService:
         notes, rec = list(self.notes.get("NAVEED", [])), self.record
 
         def work() -> dict:
-            text, label = self.router.complete("NAVEED", ceo_prompt(t, notes, rec, crowd), max_tokens=240)
-            if text:
-                pv = parse_vote(text)
-                if pv:
-                    return {"seat": "NAVEED", "vote": "approve" if pv["approve"] else "reject", "reason": pv["reason"] or why, "label": label,
-                            "score": round(s, 3), "confidence": pv["confidence"], "thesis": pv["thesis"] or thesis, "risk": pv["risk"] or base["risk"]}
-            return base
+            pv, label = self.router.complete_wait("NAVEED", ceo_prompt(t, notes, rec, crowd), lambda txt, loose: parse_vote(txt, loose), max_tokens=240)
+            if not pv:
+                raise RuntimeError("stopped")
+            return {"seat": "NAVEED", "vote": "approve" if pv["approve"] else "reject", "reason": pv["reason"] or why, "label": label,
+                    "score": round(s, 3), "confidence": pv["confidence"], "thesis": pv["thesis"] or thesis, "risk": pv["risk"] or base["risk"]}
 
-        return self.pool.submit(work)
+        return self.spawn(work)

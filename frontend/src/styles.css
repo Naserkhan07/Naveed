@@ -181,3 +181,5 @@ summary { cursor:pointer; color:var(--dim); font-size:10px; letter-spacing:.1em;
 .offbar{margin:0 10px 6px;padding:8px 10px;border:1px solid var(--line,#2a3444);border-left:3px solid #f59e0b;border-radius:6px;font-size:11.5px;color:var(--mut,#94a3b8);background:rgba(245,158,11,.06)}
 .offbar b{color:#fbbf24}
 .diag{margin:6px 0 10px}
+
+.waitllm{color:#fbbf24}

@@ -89,7 +89,7 @@ export interface Extra {
   stats: Record<string, number>;
   chatroom: { t: number; name: string; text: string; color: string; label?: string }[];
   seats: SeatInfo[];
-  llm?: { enabled: boolean; label: string; stats: Record<string, number>; last_error?: string; seat_endpoints: Record<string, string> };
+  llm?: { enabled: boolean; label: string; stats: Record<string, number>; last_error?: string; waiting: number; relay?: { available: boolean; queued: number; running: number; done: number; failed: number; last_error: string }; seat_endpoints: Record<string, string> };
   mt5?: { connected: boolean; auto: boolean };
   record?: string;
 }

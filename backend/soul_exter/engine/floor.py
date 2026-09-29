@@ -3,6 +3,7 @@ paper-evaluated outcomes -> dopamine + playbook, ambient NPCs, debate chamber le
 from __future__ import annotations
 
 import math
+import re
 import os
 import random
 import threading
@@ -35,7 +36,6 @@ FILL_WINDOW_S = 300.0
 SEAT_DWELL_S = 4.0
 HEAR_DWELL_S = 3.5
 CEO_DWELL_S = 5.0
-LLM_WAIT_S = 22.0            # virtual wall seconds to wait for an LLM verdict before falling back
 DEBATE_PERIOD_S = 22.0
 DEBATE_SPEAKERS = JUDGES + ["DROSOPHILA"]
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -486,16 +486,11 @@ class FloorEngine:
             if isinstance(res, Vote):
                 vote = res
             elif isinstance(res, Future):
-                if res.done():
+                if res.done():        # otherwise the ticket keeps waiting at the cabin until a real model has ruled
                     try:
                         vote = res.result()
                     except Exception:       # noqa: BLE001
-                        vote = None
-                        res = None
-                elif self.clock - w.data["wait0"] > LLM_WAIT_S:
-                    vote = self.judges.offline_vote(seat, i, t, self._crowd(t), " (LLM timeout)")
-            if vote is None and res is None:
-                vote = self.judges.offline_vote(seat, i, t, 0)
+                        self.pending_reviews[w.id] = (self.judges.review(seat, i, t, self._crowd(t)),)
             if vote is not None and w.timer <= 0:
                 self.pending_reviews.pop(w.id, None)
                 t.votes.append(vote)
@@ -515,10 +510,10 @@ class FloorEngine:
             if isinstance(res, dict):
                 out = res
             elif res.done():
-                out = res.result()
-            elif self.clock - w.data["wait0"] > LLM_WAIT_S:
-                out = {"seat": "NAVEED", "vote": "reject", "reason": "LLM timeout — stand down.", "label": "rules:no-LLM", "score": -1,
-                       "confidence": 50, "thesis": "No ruling came back in time; default to capital preservation.", "risk": "missed opportunity"}
+                try:
+                    out = res.result()
+                except Exception:       # noqa: BLE001
+                    self.pending_reviews[w.id] = (self.judges.ceo(t, self._crowd(t)),)
             if out is not None and w.timer <= 0:
                 self.pending_reviews.pop(w.id, None)
                 t.ceo = out
@@ -715,21 +710,21 @@ class FloorEngine:
             return
         if c["fut"] is not None:
             role, seat = c["order"][c["i"]]
-            f = c["fut"]
-            if f.done():
+            fut = c["fut"]
+            if fut.done():          # no timeout: the debate simply pauses until a real model has spoken
                 try:
-                    text, label = f.result()
+                    text, label = fut.result()
+                    if not text:
+                        raise RuntimeError("stopped")
+                    self._turn_done(c, role, seat, text, label)
                 except Exception:       # noqa: BLE001
-                    text, label = None, "rules:no-LLM"
-                self._turn_done(c, role, seat, text or self._line(role, seat, c), label if text else "rules:no-LLM")
-            elif self.clock - c["w0"] > LLM_WAIT_S:
-                self._turn_done(c, role, seat, self._line(role, seat, c), "rules:no-LLM")
+                    c["fut"] = None
         elif self.sim_t >= c["next_t"]:
             role, seat = c["order"][c["i"]]
-            if self.judges.llm_possible() and role != "open":
-                c["w0"] = self.clock
+            if self.judges.llm_possible():
                 prompt = self._debate_prompt(seat, role, c)
-                c["fut"] = self.judges.pool.submit(lambda: self.router.complete(seat, prompt, max_tokens=110))
+                clean = lambda txt, loose: (re.sub(r"\s+", " ", txt).strip()[:400] or None)
+                c["fut"] = self.judges.spawn(lambda: self.router.complete_wait(seat, prompt, clean, max_tokens=110))
             else:
                 self._turn_done(c, role, seat, self._line(role, seat, c), "rules:no-LLM")
         if self.settings.ceo_doctrine and self.sim_t >= self._doctrine_next:

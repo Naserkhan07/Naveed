@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HallScene } from './scene/HallScene';
 import { fetchLayout, getJSON, postJSON, useFloorStream } from './api';
+import { useRelayWorker } from './relay';
 import type { Frame, Layout, Theme } from './types';
 import { TopBar } from './ui/TopBar';
 import { BrainHUD } from './ui/BrainHUD';
@@ -44,6 +45,7 @@ export function App() {
     }
   }, []);
   const { extra, connected } = useFloorStream(onFrame);
+  const relay = useRelayWorker();
 
   useEffect(() => { fetchLayout().then(setLayout).catch((e) => setErr(String(e))); }, []);
   useEffect(() => {
@@ -123,7 +125,7 @@ export function App() {
           {tab === 'brain' && <div className="pane"><BrainHUD fly={fly} color={thinking.color} seatName={thinking.seat} /></div>}
         </aside>
       </div>
-      <Footer extra={extra} />
+      <Footer extra={extra} relay={relay} />
       {dossier && <Dossier id={dossier} layout={layout} onClose={() => setDossier(null)} onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setTab('chat'); setSideOpen(true); }} />}
       {asset && !dossier && <AssetCard sym={asset} extra={extra} onClose={() => setAsset(null)} onOpenTrade={(id) => { setAsset(null); setDossier(id); }} />}
       {showSettings && <Settings layout={layout} onClose={() => setShowSettings(false)} onChanged={(s) => setSpeed(s.speed)} />}

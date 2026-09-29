@@ -88,6 +88,73 @@ class Breaker:
             return {"open": left > 0, "retry_in_s": round(left, 1), "fails": self.fails, "trips": self.trips}
 
 
+class RelayHub:
+    """Lets an operator's browser make the LLM calls when the SERVER has no internet. The server queues a job (a finished
+    chat-completion request); a page that is open in a browser polls /api/relay/next, sends it to a keyless free model and
+    posts the answer to /api/relay/result. The worker thread that asked blocks until the answer arrives."""
+    STALE_S = 45.0
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.jobs: dict[int, dict] = {}
+        self.seq = 0
+        self.last_poll = 0.0
+        self.done = 0
+        self.failed = 0
+        self.last_error = ""
+
+    def available(self) -> bool:
+        return time.time() - self.last_poll < 6.0
+
+    def submit(self, messages: list[dict], max_tokens: int, timeout: float = 90.0) -> str:
+        ev = threading.Event()
+        with self.lock:
+            self.seq += 1
+            jid = self.seq
+            job = {"id": jid, "messages": messages, "max_tokens": max_tokens, "state": "pending", "taken": 0.0, "ev": ev, "text": "", "err": ""}
+            self.jobs[jid] = job
+        ev.wait(timeout)
+        with self.lock:
+            self.jobs.pop(jid, None)
+        if job["text"]:
+            return job["text"]
+        raise RuntimeError(job["err"] or "the browser did not answer in time")
+
+    def next(self, n: int = 1) -> list[dict]:
+        now = time.time()
+        out = []
+        with self.lock:
+            self.last_poll = now
+            for j in sorted(self.jobs.values(), key=lambda j: j["id"]):
+                if len(out) >= n:
+                    break
+                if j["state"] == "pending" or (j["state"] == "taken" and now - j["taken"] > self.STALE_S):
+                    j["state"], j["taken"] = "taken", now
+                    out.append({"id": j["id"], "messages": j["messages"], "max_tokens": j["max_tokens"]})
+        return out
+
+    def finish(self, jid: int, text: str, err: str):
+        with self.lock:
+            j = self.jobs.get(jid)
+            if not j:
+                return
+            if text:
+                j["text"] = text
+                self.done += 1
+                self.last_error = ""
+            else:
+                j["err"] = err or "empty reply"
+                self.failed += 1
+                self.last_error = j["err"]
+            j["ev"].set()
+
+    def state(self) -> dict:
+        with self.lock:
+            return {"available": self.available(), "queued": sum(1 for j in self.jobs.values() if j["state"] == "pending"),
+                    "running": sum(1 for j in self.jobs.values() if j["state"] == "taken"), "done": self.done, "failed": self.failed,
+                    "last_error": self.last_error}
+
+
 class FreeChain:
     """keyless providers tried in order; each has its own short breaker. Quacks like a Breaker for callers that only ask allow()/state()."""
     NAMES = ("pollinations", "llm7", "pollinations-get")
@@ -114,10 +181,13 @@ class FreeChain:
 class LLMRouter:
     def __init__(self, clock=time.monotonic):
         self.breaker = FreeChain(clock=clock)
+        self.relay = RelayHub()
+        self.stop = threading.Event()
+        self.waiting = 0                 # verdict / debate calls currently waiting for a model to answer
         self.enabled = True             # master switch (settings)
         self.free_enabled = True
         self.force_offline = os.environ.get("SOUL_OFFLINE") == "1"
-        self.stats = {"free": 0, "own": 0, "failed": 0, "errors": 0}
+        self.stats = {"free": 0, "own": 0, "relay": 0, "failed": 0, "errors": 0}
         self.last_label = "no language model yet"
         self.last_error = ""
         self._cli = httpx.Client(timeout=httpx.Timeout(TIMEOUT_S, connect=8.0))
@@ -294,9 +364,35 @@ class LLMRouter:
                     return t, lab
                 except Exception as e:       # noqa: BLE001
                     self.last_error = f"{type(e).__name__}: {str(e)[:100]}"
+            if self.relay.available():        # the server has no route to a model: an open browser makes the call for it
+                try:
+                    t = self.relay.submit(messages, max_tokens)
+                    self.stats["relay"] += 1
+                    self.last_label = "free:gpt (relayed by your browser)"
+                    return t, self.last_label
+                except Exception as e:       # noqa: BLE001
+                    self.last_error = f"browser relay: {str(e)[:100]}"
         self.stats["failed"] += 1
         self.last_label = "no language model reachable"
         return None, self.last_label
+
+    def complete_wait(self, seat: str, messages: list[dict], accept, max_tokens: int = 320, retry_s: float = 2.5):
+        """Block until a REAL model answers and `accept(text)` returns a value. No rule-based stand-in: the caller simply waits
+        (a ticket waits at its cabin). Bad / unparsable answers are asked again."""
+        self.waiting += 1
+        try:
+            bad = 0
+            while not self.stop.is_set():
+                text, label = self.complete(seat, messages, max_tokens)
+                if text:
+                    v = accept(text, bad >= 3)      # after 3 unusable answers the parser may be lenient
+                    if v is not None:
+                        return v, label
+                    bad += 1
+                self.stop.wait(retry_s)
+            return None, "stopped"
+        finally:
+            self.waiting -= 1
 
     def build_messages(self, seat: str, question: str, history: list[dict] | None, context: str | None, floor: dict | None) -> list[dict]:
         msgs = [{"role": "system", "content": CONTRACT.format(seat=seat)}]
@@ -326,4 +422,5 @@ class LLMRouter:
         return {"enabled": self.enabled, "free": {"url": POLLINATIONS_URL, "model": POLLINATIONS_MODEL, "timeout_s": TIMEOUT_S,
                 "enabled": self.free_enabled, "breaker": self.breaker.state()},
                 "seat_endpoints": {k: f"{v['provider']}:{v['model']}" for k, v in self.cfg.items() if v["provider"] != "auto"},
-                "stats": dict(self.stats), "label": self.last_label, "last_error": self.last_error}
+                "stats": dict(self.stats), "label": self.last_label, "last_error": self.last_error,
+                "waiting": self.waiting, "relay": self.relay.state()}

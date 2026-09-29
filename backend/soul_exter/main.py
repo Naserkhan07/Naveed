@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(loop())
     yield
     stop.set()
+    ENGINE.router.stop.set()
     task.cancel()
     micro.stop()
     live.stop()
@@ -230,6 +231,28 @@ def api_llm_set(body: dict):
     e = engine()
     e.router.set_cfg(body.get("seats", body))
     return e.router.get_cfg()
+
+
+class RelayJobIn(BaseModel):
+    max: int = 1
+
+
+class RelayResultIn(BaseModel):
+    id: int
+    text: str = ""
+    error: str = ""
+
+
+@app.post("/api/relay/next")
+def api_relay_next(body: RelayJobIn):
+    """an open browser asks for LLM jobs the server could not send itself (server has no internet)"""
+    return {"jobs": engine().router.relay.next(max(0, min(4, body.max)))}
+
+
+@app.post("/api/relay/result")
+def api_relay_result(body: RelayResultIn):
+    engine().router.relay.finish(body.id, body.text.strip(), body.error[:200])
+    return {"ok": True}
 
 
 @app.post("/api/llm/diagnose")
