@@ -1,3 +1,4 @@
+import { Diagnose } from './Diagnose';
 import { useEffect, useState } from 'react';
 import { getJSON, postJSON } from '../api';
 import { SEAT_ORDER, seatColor } from './common';
@@ -124,6 +125,7 @@ function Llm({ layout }: { layout: Layout | null }) {
   return (
     <>
       <div className="note-box">Every seat can use its <b>own model and endpoint</b>. Use <b>auto</b> for the free keyless GPT (default). For open-source models on a Kaggle GPU, choose <b>ollama</b> (<span className="mono">http://127.0.0.1:11434/v1</span>) — or any OpenAI-compatible URL (OpenRouter, Groq, Together, HF, vLLM). Keys are stored on the server only and are masked unless you reveal them.</div>
+      <Diagnose />
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span className="muted small">Apply to all seats:</span>
         {Object.keys(cfg.presets).map((p) => <button key={p} className="btn sm" title={cfg.presets[p].note} onClick={() => applyAll(p)}>{p}</button>)}

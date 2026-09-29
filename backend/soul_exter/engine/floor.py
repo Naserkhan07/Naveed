@@ -786,7 +786,7 @@ class FloorEngine:
         seat = resolve_seat(seat_id)
         self.think(seat, 8.0)
         hist = history if history is not None else self.chats[seat]
-        rep = self.router.chat(seat, question, hist, context)
+        rep = self.router.chat(seat, question, hist, context, self.floor_snapshot())
         self.chats[seat].append({"role": "user", "content": question})
         self.chats[seat].append({"role": "assistant", "content": rep.text, "label": rep.label})
         del self.chats[seat][:-60]
@@ -800,6 +800,22 @@ class FloorEngine:
         o = self.mt5.enqueue(t, self.settings.mt5_lots, live_ok, self.settings.mt5_allow_synth, why)
         self.log("mt5", f"{t.id} {t.sym} {o['side']} {o['lots']} lots -> MT5 queue: {o['status']}" + (f" ({o['msg']})" if o["msg"] else ""), t.id)
         return o
+
+    def floor_snapshot(self) -> dict:
+        """compact read-only view of the live floor, used to answer questions about it (offline) or to ground the LLM"""
+        with self.lock:
+            snap = self.hunter.snapshot()
+            tape = {r["s"]: r for r in self.tape.summary()}
+            regimes: dict[str, int] = {}
+            for r in tape.values():
+                regimes[r["r"]] = regimes.get(r["r"], 0) + 1
+            return {"stats": self.kpis(), "orders": [self.tickets[i].card() for i in reversed(self.order[-14:]) if i in self.tickets],
+                    "fly": {"state": snap["state"], "focus": snap["focus"], "watch": snap["watch"], "threshold": snap["threshold"],
+                            "dopamine": snap["dopamine"], "updates": snap["updates"]},
+                    "tape": tape, "regimes": regimes, "mode": self.tape.live_mode if hasattr(self.tape, "live_mode") else "synthetic",
+                    "judges": {k: {"bias": float(v)} for k, v in self.judges.bias.items()} if hasattr(self, "judges") else {},
+                    "lessons": [l["text"] for l in list(self.lessons)[-3:]], "record": getattr(getattr(self, "judges", None), "record", "") or "",
+                    "mt5": {"connected": bool(self.mt5.bridge.get("connected") and __import__("time").time() - self.mt5.bridge.get("last_seen", 0) < 20), "auto": bool(getattr(self.settings, "mt5_auto", False))}}
 
     def trade_context(self, t: Ticket) -> str:
         return (f"Ticket {t.id}: {'LONG' if t.direction > 0 else 'SHORT'} {t.sym} via {t.emitter}, conviction {t.conviction:.2f}, "

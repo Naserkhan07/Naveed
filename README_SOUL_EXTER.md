@@ -41,3 +41,9 @@ LLM order: keyless Pollinations (`https://text.pollinations.ai/openai`) → env 
 **Tests.** `python tests/smoke_engine.py 60 8` and `python tests/mt5_bridge_test.py`.
 
 > The UI has no login. If you expose it through a public tunnel, treat the URL as a secret (it shows the bridge token and can change LLM keys).
+
+## Chat: what answers when no language model is reachable
+
+Desks answer through, in order: per-seat endpoint → keyless free chain (Pollinations POST, llm7, Pollinations GET; each with its own 20 s breaker) → hosted keys → Wikipedia/DuckDuckGo lookup for factual questions → built-in knowledge (`llm/kb.py`: ~140 trading, finance, science and tech entries, country facts, maths, units, dates, jokes) plus **live-floor intents** (performance, open trades, why the last trade was accepted/rejected and by whom, what the fly is hunting, judge calibration, any symbol's price/regime). Multi-part questions are answered part by part. Unknown questions get an honest reply, never an invented fact.
+
+`POST /api/llm/diagnose` (button: Settings → LLM seats → *Check LLM connection*, or the orange bar in the chat dock) tries every path and reports the exact error. The sandbox this was built in has no outbound internet, so free/web paths were not exercised there — run the backend on Kaggle / your PC (or set `OPENROUTER_API_KEY` / `GROQ_API_KEY`) for full ChatGPT-style answers. Regression test: `python tests/offline_chat_test.py`.

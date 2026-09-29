@@ -210,6 +210,11 @@ def api_llm_set(body: dict):
     return e.router.get_cfg(False)
 
 
+@app.post("/api/llm/diagnose")
+def api_llm_diagnose():
+    return engine().router.diagnose()
+
+
 @app.post("/api/llm/test/{seat}")
 def api_llm_test(seat: str):
     return engine().router.test_seat(seat)

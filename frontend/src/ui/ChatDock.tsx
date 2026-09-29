@@ -1,3 +1,4 @@
+import { Diagnose } from './Diagnose';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatMsg, Extra, Layout } from '../types';
 import { postJSON } from '../api';
@@ -76,6 +77,9 @@ export function ChatDock({ layout, extra, target, tradeId, onTarget, onClearTrad
         <span className="muted">{target === ALL ? 'debate table — every judge answers' : target === ROOM ? 'shared room' : SEAT_ROLE[target]}</span>
         {tradeId && !target.startsWith('@') && <button className="chip" onClick={onClearTrade} title="leave trade context">trade {tradeId} ✕</button>}
       </div>
+      {extra?.llm?.label?.startsWith('offline') && target !== ROOM && (
+        <div className="offbar"><b>Offline mode</b> — no language model is reachable from the server, so desks answer from built-in trading knowledge and live floor data.<Diagnose compact /></div>
+      )}
       <div className="msgs">
         {target === ROOM ? room.map((m, i) => (
           <div key={i} className={'bub ' + (m.name === 'operator' ? 'user' : 'bot')} style={{ '--c': m.color } as React.CSSProperties}>
