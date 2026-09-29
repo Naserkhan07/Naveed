@@ -43,7 +43,7 @@ BRAIN_PATH = os.path.join(DATA_DIR, "fly_brain.npz")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 CLASSES = ["forex", "crypto", "stock", "index", "future", "option"]
 TURN_S = 9.0                 # sim seconds between debate turns
-DEBATE_GAP_S = 26.0
+DEBATE_GAP_S = 90.0
 
 
 @dataclass
@@ -395,6 +395,7 @@ class FloorEngine:
         self.desk_busy[desk] = tid
         self.paper_active.append(tid)
         self.stats["tickets"] += 1
+        self.judges.prefetch(t, self._crowd(t))      # the council's LLM request starts now; it is ready before cabin 1
         label = f"{'LONG' if s.direction > 0 else 'SHORT'} {s.sym}"
         w = Walker(f"w_{tid}", "ticket", label, *self.nav.wp["entry_outside"], COLORS["DROSOPHILA"], self.rng)
         w.ticket = tid
@@ -724,7 +725,7 @@ class FloorEngine:
             if self.judges.llm_possible():
                 prompt = self._debate_prompt(seat, role, c)
                 clean = lambda txt, loose: (re.sub(r"\s+", " ", txt).strip()[:400] or None)
-                c["fut"] = self.judges.spawn(lambda: self.router.complete_wait(seat, prompt, clean, max_tokens=110))
+                c["fut"] = self.judges.spawn(lambda: self.router.complete_wait(seat, prompt, clean, max_tokens=110, low=True))
             else:
                 self._turn_done(c, role, seat, self._line(role, seat, c), "rules:no-LLM")
         if self.settings.ceo_doctrine and self.sim_t >= self._doctrine_next:

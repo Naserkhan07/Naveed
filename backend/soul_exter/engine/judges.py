@@ -143,6 +143,10 @@ def parse_vote(text: str, loose: bool = False) -> dict | None:
             return None
         body = re.sub(r"\s+", " ", text).strip()
         return {"approve": ap > rj, "confidence": 60, "thesis": body[:260], "risk": "", "reason": body[:220]}
+    return _vote_from(j)
+
+
+def _vote_from(j: dict) -> dict | None:
     v = str(j.get("vote", "")).lower()
     if v.startswith(("appr", "yes", "buy", "long", "enter", "accept")):
         ap = True
@@ -152,6 +156,47 @@ def parse_vote(text: str, loose: bool = False) -> dict | None:
         return None
     return {"approve": ap, "confidence": _num(j.get("confidence"), 0, 100, 60), "thesis": str(j.get("thesis", ""))[:260],
             "risk": str(j.get("risk", ""))[:160], "reason": str(j.get("reason", "") or j.get("thesis", ""))[:220]}
+
+
+def panel_prompt(t: Ticket, notes: list[str] | None, record: str, crowd: int) -> list[dict]:
+    """ONE request that yields the whole pipeline for a ticket: five cabin votes (each judge reads the earlier ones) and,
+    for the case the council splits 3-4, the CEO ruling. Free model tiers allow only a handful of requests per minute, so
+    one call per trade (started the moment the ticket is created, ready before it reaches cabin 1) keeps verdicts instant."""
+    who = "\n".join(f"- {s} (cabin {SEATS[s]['cabin']}): {SEATS[s]['role']}. {SEATS[s]['bio']} Lens: {SEATS[s]['lens']}." for s in JUDGES)
+    ceo = SEATS["NAVEED"]
+    sys_ = (f"You simulate the five-judge council of a professional trading floor plus its CEO. Judges in order:\n{who}\n"
+            f"CEO NAVEED, {ceo['role']}: rules only if the council splits 3-4 approvals; weighs the whole dossier, results and the {crowd} correlated open tickets. "
+            f"{METHOD} Each judge reads the notes of the earlier cabins and votes independently in character; do not let them all agree by default. "
+            'Reply with ONE JSON object and nothing else: {"judges":[{"seat":"ATLAS","vote":"approve|reject","confidence":0-100,"thesis":"...","risk":"...","reason":"one sentence"}, ... one per judge in the order above], '
+            '"ceo":{"vote":"approve|reject","confidence":0-100,"thesis":"...","risk":"...","reason":"one sentence"}}. Keep every text field under 25 words.')
+    if notes:
+        sys_ += " Lessons the team learned from recent results (apply them): " + " ".join(notes[-4:])
+    user = f"Ticket: {json.dumps(ticket_facts(t))}\n" + (f"Floor track record: {record}\n" if record else "") + "Give the council's five votes and the CEO's conditional ruling."
+    return [{"role": "system", "content": sys_}, {"role": "user", "content": user}]
+
+
+def parse_panel(text: str, loose: bool = False) -> dict | None:
+    """-> {seat: vote-dict, ..., 'NAVEED': vote-dict|None} once all five judges are present, else None"""
+    m = re.search(r"\{.*\}", text or "", re.S)
+    try:
+        j = json.loads(m.group(0)) if m else None
+    except Exception:       # noqa: BLE001
+        return None
+    if not isinstance(j, dict) or not isinstance(j.get("judges"), list):
+        return None
+    out: dict = {}
+    for k, item in enumerate(j["judges"]):
+        if not isinstance(item, dict):
+            continue
+        seat = str(item.get("seat", "")).upper()
+        seat = seat if seat in JUDGES else (JUDGES[k] if k < len(JUDGES) else "")
+        pv = _vote_from(item)
+        if seat and pv and seat not in out:
+            out[seat] = pv
+    if len(out) < len(JUDGES):
+        return None
+    out["NAVEED"] = _vote_from(j["ceo"]) if isinstance(j.get("ceo"), dict) else None
+    return out
 
 
 def enrich(seat: str, t: Ticket, approve: bool, score: float, why: str) -> tuple[int, str, str]:
@@ -179,6 +224,24 @@ class JudgeService:
         self.notes: dict[str, list[str]] = {s: [] for s in JUDGES + ["NAVEED"]}    # takeaways from the debate room
         self.record = ""                                                            # one-line track record for prompts
         self.learned = 0
+        self.panels: dict[str, Future] = {}         # ticket id -> Future[(votes for all five judges + CEO, label)]
+
+    def panel_mode(self) -> bool:
+        """one LLM request per ticket (all five judges + the CEO's conditional ruling) unless a seat has its own endpoint"""
+        return self.llm_possible() and all(c["provider"] == "auto" for c in self.router.cfg.values())
+
+    def prefetch(self, t: Ticket, crowd: int) -> None:
+        """start the ticket's single council request now, while it is still walking to its desk"""
+        if not self.panel_mode() or t.id in self.panels:
+            return
+        allnotes = [n for s in JUDGES + ["NAVEED"] for n in self.notes.get(s, [])[-1:]]
+        msgs = panel_prompt(t, allnotes, self.record, crowd)
+
+        def work():
+            return self.router.complete_wait("ATLAS", msgs, parse_panel, max_tokens=900)
+        self.panels[t.id] = self.spawn(work)
+        for k in list(self.panels)[:-200]:
+            self.panels.pop(k, None)
 
     def llm_possible(self) -> bool:
         """True = every verdict is made by a real language model (the floor waits for it). False only when the operator has
@@ -235,6 +298,19 @@ class JudgeService:
             return base
         prior = list(t.votes)
         notes, rec = list(self.notes.get(seat, [])), self.record
+        if self.panel_mode():
+            self.prefetch(t, crowd)
+            pf = self.panels[t.id]
+
+            def from_panel() -> Vote:
+                t0 = time.time()
+                res, label = pf.result()
+                if not res:
+                    raise RuntimeError("stopped")
+                pv = res[seat]
+                return Vote(seat, cabin, pv["approve"], score, pv["reason"] or why, label + " · council call", int((time.time() - t0) * 1000),
+                            pv["confidence"], pv["thesis"] or thesis, pv["risk"] or risk)
+            return self.spawn(from_panel)
 
         def work() -> Vote:
             t0 = time.time()
@@ -265,6 +341,15 @@ class JudgeService:
         notes, rec = list(self.notes.get("NAVEED", [])), self.record
 
         def work() -> dict:
+            pf = self.panels.get(t.id)
+            pv = label = None
+            if pf is not None:
+                res, lab = pf.result()
+                if res and res.get("NAVEED"):
+                    pv, label = res["NAVEED"], lab + " · council call"
+            if pv:
+                return {"seat": "NAVEED", "vote": "approve" if pv["approve"] else "reject", "reason": pv["reason"] or why, "label": label,
+                        "score": round(s, 3), "confidence": pv["confidence"], "thesis": pv["thesis"] or thesis, "risk": pv["risk"] or base["risk"]}
             pv, label = self.router.complete_wait("NAVEED", ceo_prompt(t, notes, rec, crowd), lambda txt, loose: parse_vote(txt, loose), max_tokens=240)
             if not pv:
                 raise RuntimeError("stopped")

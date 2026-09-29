@@ -32,11 +32,11 @@ LOCAL_TIMEOUT_S = 40.0
 
 POLLINATIONS_URL = "https://text.pollinations.ai/openai"
 POLLINATIONS_MODEL = "openai"
-TIMEOUT_S = 16.0
+TIMEOUT_S = 30.0
 BREAKER_FAILS = 2
 BREAKER_OPEN_S = 20.0      # short cool-off: the network may come back at any time
 LLM7_URL = "https://api.llm7.io/v1/chat/completions"
-LLM7_MODEL = "default"
+LLM7_MODEL = "mistral-Nemo-Instruct-2407"
 UNREACHABLE = "I can't reach a language model from the server right now ({why}), so I won't guess."
 POLLI_GET = "https://text.pollinations.ai/"
 
@@ -183,6 +183,7 @@ class LLMRouter:
         self.breaker = FreeChain(clock=clock)
         self.relay = RelayHub()
         self.stop = threading.Event()
+        self.urgent = 0
         self.waiting = 0                 # verdict / debate calls currently waiting for a model to answer
         self.enabled = True             # master switch (settings)
         self.free_enabled = True
@@ -288,7 +289,8 @@ class LLMRouter:
     # -------------------------------------------------------------- backends
     def _free_one(self, name: str, messages: list[dict], max_tokens: int) -> str:
         if name == "pollinations":
-            r = self._cli.post(POLLINATIONS_URL, json={"model": POLLINATIONS_MODEL, "messages": messages, "max_tokens": max_tokens,
+            r = self._cli.post(POLLINATIONS_URL, json={"model": POLLINATIONS_MODEL, "messages": messages, "max_tokens": max(max_tokens * 3, 1200),   # the free model reasons first; reasoning tokens count
+                                                        
                                                         "temperature": 0.6, "private": True}, timeout=TIMEOUT_S)
         elif name == "llm7":
             r = self._cli.post(LLM7_URL, json={"model": LLM7_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.6}, timeout=TIMEOUT_S)
@@ -376,13 +378,18 @@ class LLMRouter:
         self.last_label = "no language model reachable"
         return None, self.last_label
 
-    def complete_wait(self, seat: str, messages: list[dict], accept, max_tokens: int = 320, retry_s: float = 2.5):
+    def complete_wait(self, seat: str, messages: list[dict], accept, max_tokens: int = 320, retry_s: float = 2.5, low: bool = False):
         """Block until a REAL model answers and `accept(text)` returns a value. No rule-based stand-in: the caller simply waits
         (a ticket waits at its cabin). Bad / unparsable answers are asked again."""
         self.waiting += 1
+        if not low:
+            self.urgent += 1
         try:
             bad = 0
             while not self.stop.is_set():
+                if low and self.urgent > 0:       # free tiers allow few requests per minute: verdicts go first, chatter waits
+                    self.stop.wait(1.0)
+                    continue
                 text, label = self.complete(seat, messages, max_tokens)
                 if text:
                     v = accept(text, bad >= 3)      # after 3 unusable answers the parser may be lenient
@@ -393,6 +400,8 @@ class LLMRouter:
             return None, "stopped"
         finally:
             self.waiting -= 1
+            if not low:
+                self.urgent -= 1
 
     def build_messages(self, seat: str, question: str, history: list[dict] | None, context: str | None, floor: dict | None) -> list[dict]:
         msgs = [{"role": "system", "content": CONTRACT.format(seat=seat)}]

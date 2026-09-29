@@ -17,7 +17,11 @@ end = time.time() + float(sys.argv[1])
 while time.time() < end:
     for j in post("/api/relay/next", {"max": 3})["jobs"]:
         txt = " ".join(m["content"] for m in j["messages"])
-        if "json" in txt.lower():
+        if '"judges"' in txt:
+            k = next(c)
+            one = lambda i: {"vote": "approve" if (k + i) % 3 else "reject", "confidence": 55 + (k + i) % 35, "thesis": f"mock thesis {k}.{i}", "risk": "mock risk", "reason": f"mock reason {k}.{i}"}
+            out = json.dumps({"judges": [{"seat": s, **one(i)} for i, s in enumerate(["ATLAS", "QUANTA", "MERIDIAN", "VOLTA", "VECTOR"])], "ceo": one(7)})
+        elif "json" in txt.lower():
             k = next(c)
             out = json.dumps({"vote": "approve" if k % 3 else "reject", "confidence": 60 + k % 30, "thesis": f"mock LLM thesis {k}",
                               "risk": "mock risk", "reason": f"mock LLM reason {k}"})
