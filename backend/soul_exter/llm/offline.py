@@ -216,7 +216,7 @@ def try_floor(q: str, seat: str, F: dict | None) -> str | None:
             return (f"The latest decided trade is {_fmt_order(o)} — {what}, path '{o.get('path') or 'n/a'}'. Who decided: {_votes_line(o)}. "
                     f"Conviction {o['conviction']:.2f}, R:R {o['rr']:.2f}, regime {o.get('regime', '?')}. Click the trader in the hall or 'Full details' on the order card for every judge's reasoning." + tail)
         return "No trade has been decided yet — tickets are still walking the cabins."
-    if re.search(r"\b(how are we|how('s| is) (it|the floor|everything) going|performance|p ?& ?l|pnl|profit|loss(es)?|win rate|results?|track record|doing)\b", s):
+    if re.search(r"\b(how are we|how('s| is) (it|the floor|everything) going|how('s| is) (the )?(desk|floor|team)|are we (winning|losing|profitable|making)|p ?& ?l|pnl|profit and loss|(our|total|net|overall) (profit|loss|results?|performance)|(our|current|floor.s|the floor.s) win rate|track record|so far today)\b", s):
         n = S.get("wins", 0) + S.get("losses", 0)
         wr = f"{100 * S['wins'] / n:.0f}%" if n else "n/a"
         return (f"So far: {S.get('tickets', 0)} tickets, {S.get('entry', 0)} sent to entry, {S.get('exit', 0)} to exit; {n} resolved paper trades with win rate {wr} "
