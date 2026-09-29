@@ -27,3 +27,8 @@ cloudrun/secrets/
 # Editors / OS
 .idea/
 .DS_Store
+
+# SOUL EXTER
+node_modules/
+dist/
+backend/data/
