@@ -6,7 +6,11 @@ import json
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import os
+
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -30,6 +34,19 @@ class TradeChatIn(BaseModel):
 
 class DebateIn(BaseModel):
     question: str
+
+
+class MT5Report(BaseModel):
+    id: str
+    ok: bool
+    retcode: int | None = None
+    msg: str = ""
+    ticket: int | None = None
+    price: float | None = None
+
+
+class MT5Beat(BaseModel):
+    account: dict | None = None
 
 
 class SayIn(BaseModel):
@@ -176,6 +193,83 @@ def api_chatroom_say(body: SayIn):
     return {"posted": msg, "reply": rep}
 
 
+@app.get("/api/universe")
+def api_universe():
+    return engine().universe()
+
+
+@app.get("/api/llm/config")
+def api_llm_get(reveal: bool = False):
+    return engine().router.get_cfg(reveal)
+
+
+@app.post("/api/llm/config")
+def api_llm_set(body: dict):
+    e = engine()
+    e.router.set_cfg(body.get("seats", body))
+    return e.router.get_cfg(False)
+
+
+@app.post("/api/llm/test/{seat}")
+def api_llm_test(seat: str):
+    return engine().router.test_seat(seat)
+
+
+# ---- MetaTrader 5 bridge (the bridge script runs where the MT5 terminal is; it authenticates with the token) ----
+def _bridge_auth(tok: str | None):
+    if tok != engine().mt5.token:
+        raise HTTPException(401, "bad bridge token")
+
+
+@app.get("/api/mt5/status")
+def api_mt5_status():
+    st = engine().mt5.status()
+    st["settings"] = {k: getattr(engine().settings, k) for k in ("mt5_auto", "mt5_lots", "mt5_allow_synth")}
+    st["server"] = os.environ.get("MT5_SERVER", "MetaQuotes-Demo")
+    return st
+
+
+@app.get("/api/mt5/token")
+def api_mt5_token():
+    return {"token": engine().mt5.token}
+
+
+@app.post("/api/mt5/heartbeat")
+def api_mt5_beat(body: MT5Beat, x_bridge_token: str | None = Header(None)):
+    _bridge_auth(x_bridge_token)
+    engine().mt5.heartbeat(body.account)
+    return {"ok": True}
+
+
+@app.get("/api/mt5/pending")
+def api_mt5_pending(x_bridge_token: str | None = Header(None)):
+    _bridge_auth(x_bridge_token)
+    engine().mt5.heartbeat(None)
+    return {"orders": engine().mt5.pending()}
+
+
+@app.post("/api/mt5/report")
+def api_mt5_report(body: MT5Report, x_bridge_token: str | None = Header(None)):
+    _bridge_auth(x_bridge_token)
+    e = engine()
+    pub = e.mt5.report(body.id, body.dict())
+    t = e.tickets.get(body.id)
+    if t and pub:
+        t.mt5 = pub
+        e.log("mt5", f"{t.id} {t.sym} MT5 {pub['status']}" + (f" #{pub['mt5_ticket']} @ {pub['price']}" if pub["status"] == "filled" else f": {pub['msg']}"), t.id)
+    return {"ok": bool(pub)}
+
+
+@app.post("/api/trades/{tid}/mt5")
+def api_trade_mt5(tid: str):
+    e = engine()
+    t = e.tickets.get(tid)
+    if t is None:
+        raise HTTPException(404, "unknown trade")
+    o = e.send_mt5(t, "manual")
+    return e.mt5.public(o) | {"id": tid}
+
+
 @app.get("/api/settings")
 def api_settings_get():
     return engine().state()["settings"]
@@ -205,3 +299,16 @@ async def ws(sock: WebSocket):
             await asyncio.sleep(1 / 12)
     except (WebSocketDisconnect, RuntimeError):
         return
+
+
+# ---- serve the built frontend (Kaggle / single-port deployments): `cd frontend && npm run build`
+_DIST = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+if os.path.isdir(_DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
+
+    @app.get("/{path:path}")
+    def spa(path: str):
+        f = os.path.join(_DIST, path)
+        if path and os.path.isfile(f) and os.path.abspath(f).startswith(os.path.abspath(_DIST)):
+            return FileResponse(f)
+        return FileResponse(os.path.join(_DIST, "index.html"))

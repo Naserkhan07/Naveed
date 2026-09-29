@@ -13,10 +13,14 @@ class Vote:
     reason: str
     label: str
     ms: int = 0
+    confidence: int = 0            # 0-100, how sure this judge is of its own vote
+    thesis: str = ""               # why the trade is (or is not) expected to be profitable
+    risk: str = ""                 # main thing that can go wrong
 
     def dict(self) -> dict:
         return {"seat": self.seat, "cabin": self.cabin, "vote": "approve" if self.approve else "reject",
-                "score": round(self.score, 3), "reason": self.reason, "label": self.label, "ms": self.ms}
+                "score": round(self.score, 3), "reason": self.reason, "label": self.label, "ms": self.ms,
+                "confidence": self.confidence, "thesis": self.thesis, "risk": self.risk}
 
 
 @dataclass
@@ -57,6 +61,7 @@ class Ticket:
     finished: bool = False         # walker has left the floor
     dopamine: float | None = None
     trace: list = field(default_factory=list)
+    mt5: dict = field(default_factory=dict)      # order status from the MT5 bridge (queued/sent/filled/error)
 
     @property
     def approvals(self) -> int:
@@ -75,4 +80,4 @@ class Ticket:
                 "cabin": self.cabin, "approvals": self.approvals, "votes": [v.dict() for v in self.votes], "ceo": self.ceo,
                 "verdict": self.verdict, "path": self.verdict_path, "paper": self.paper, "r": None if self.r is None else round(self.r, 3),
                 "t0": round(self.t0, 1), "info": self.info, "regime": self.regime, "dopamine": self.dopamine,
-                "features": self.features}
+                "features": self.features, "mt5": self.mt5}

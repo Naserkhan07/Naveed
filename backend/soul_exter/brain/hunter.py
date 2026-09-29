@@ -72,6 +72,7 @@ class Hunter:
     def __init__(self, brain: FlyBrain | None = None):
         self.brain = brain or FlyBrain()
         self.n = len(UNIVERSE)
+        self.mask = np.ones(self.n, dtype=bool)        # markets / symbols the operator enabled in Settings
         self.last_sym: dict[int, float] = {}
         self.last_global = -1e9
         self.state = "ROAM"
@@ -103,7 +104,7 @@ class Hunter:
         sense, ex = SN.compute(tape, corr, micro, now)
         out = self.brain.forward(sense, ex)
         self.last_out, self.last_extras = out, ex
-        hunger = out["hunger"]
+        hunger = np.where(self.mask, out["hunger"], 0.0)
         d = out["dir"]
         spread_ratio = ex["spread_ratio"]
         spread_pen = np.clip(spread_ratio * SPREAD_RATIO_SCALE / COST_GATE - 0.6, 0, 1) * 0.06
@@ -126,6 +127,8 @@ class Hunter:
         # ---- (b)/(c) correlation finders (strong band only, fresh table only)
         if cf.bars > 0:
             for i in range(self.n):
+                if not self.mask[i]:
+                    continue
                 pr = float(cf.peer_rho[i])
                 z = float(cf.resid_z[i])
                 bs = float(cf.break_shift[i])

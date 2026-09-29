@@ -8,6 +8,7 @@ Every reply carries a label such as "free:gpt (keyless)".
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import threading
@@ -19,6 +20,18 @@ import httpx
 from . import offline
 from .humanize import humanize
 from .seats import SEATS, resolve_seat
+
+CFG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "llm_config.json")
+PRESETS = {
+    "auto": {"base_url": "", "note": "free keyless GPT -> env keys -> offline"},
+    "ollama": {"base_url": "http://127.0.0.1:11434/v1", "note": "local Ollama (Kaggle GPU / your PC) - no key needed"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "note": "OpenRouter (has free open-source models)"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "note": "Groq (free tier, open-source Llama)"},
+    "together": {"base_url": "https://api.together.xyz/v1", "note": "Together AI"},
+    "huggingface": {"base_url": "https://router.huggingface.co/v1", "note": "Hugging Face inference router"},
+    "custom": {"base_url": "", "note": "any OpenAI-compatible /v1 endpoint (vLLM, LM Studio, ...)"},
+}
+LOCAL_TIMEOUT_S = 40.0
 
 POLLINATIONS_URL = "https://text.pollinations.ai/openai"
 POLLINATIONS_MODEL = "openai"
@@ -82,6 +95,106 @@ class LLMRouter:
         self.stats = {"free": 0, "hosted": 0, "offline": 0, "errors": 0}
         self.last_label = "offline:reasoning"
         self._cli = httpx.Client(timeout=httpx.Timeout(TIMEOUT_S, connect=8.0))
+        self.cfg: dict[str, dict] = {k: {"provider": "auto", "base_url": "", "model": "", "api_key": ""} for k in SEATS}
+        self.seat_breakers = {k: Breaker(3, 60.0) for k in SEATS}
+        self.seat_stats = {k: {"ok": 0, "err": 0, "ms": 0, "last_error": ""} for k in SEATS}
+        self._seed_from_env()
+        self.load_cfg()
+
+    # -------------------------------------------------------------- per-seat endpoint config
+    def _seed_from_env(self):
+        base = os.environ.get("LLM_BASE_URL", "").strip()
+        for k in SEATS:
+            m = os.environ.get(f"SOUL_MODEL_{k}", "").strip()
+            if base:
+                self.cfg[k].update(provider="ollama" if "11434" in base else "custom", base_url=base.rstrip("/"),
+                                   model=m or SEATS[k].get("ollama", ""), api_key=os.environ.get("LLM_API_KEY", ""))
+
+    def load_cfg(self):
+        try:
+            with open(CFG_PATH) as f:
+                saved = json.load(f)
+            for k, v in saved.items():
+                if k in self.cfg and isinstance(v, dict):
+                    self.cfg[k].update({a: str(v.get(a, "")) for a in ("provider", "base_url", "model", "api_key")})
+        except (OSError, ValueError):
+            pass
+
+    def save_cfg(self):
+        try:
+            os.makedirs(os.path.dirname(CFG_PATH), exist_ok=True)
+            with open(CFG_PATH, "w") as f:
+                json.dump(self.cfg, f, indent=1)
+            os.chmod(CFG_PATH, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def mask(key: str) -> str:
+        return "" if not key else (key[:4] + "…" + key[-3:] if len(key) > 10 else "•" * len(key))
+
+    def get_cfg(self, reveal: bool = False) -> dict:
+        out = {}
+        for k, v in self.cfg.items():
+            info = SEATS[k]
+            out[k] = {**v, "api_key": v["api_key"] if reveal else self.mask(v["api_key"]), "has_key": bool(v["api_key"]),
+                      "persona": info["persona"], "role": info["role"], "default_model": info.get("ollama", ""),
+                      "stats": self.seat_stats[k], "breaker": self.seat_breakers[k].state()}
+        return {"seats": out, "presets": PRESETS}
+
+    def set_cfg(self, patch: dict):
+        for k, v in (patch or {}).items():
+            k = resolve_seat(k) if k not in self.cfg else k
+            if not isinstance(v, dict):
+                continue
+            c = self.cfg[k]
+            for a in ("provider", "base_url", "model"):
+                if a in v:
+                    c[a] = str(v[a]).strip()
+            if "api_key" in v and v["api_key"] is not None and "…" not in str(v["api_key"]) and "•" not in str(v["api_key"]):
+                c["api_key"] = str(v["api_key"]).strip()
+            if c["provider"] in PRESETS and not c["base_url"] and PRESETS[c["provider"]]["base_url"]:
+                c["base_url"] = PRESETS[c["provider"]]["base_url"]
+            if c["provider"] == "ollama" and not c["model"]:
+                c["model"] = SEATS[k].get("ollama", "")
+            self.seat_breakers[k] = Breaker(3, 60.0)
+        self.save_cfg()
+
+    def _seat_call(self, seat: str, messages: list[dict], max_tokens: int) -> tuple[str, str] | None:
+        c = self.cfg[seat]
+        if c["provider"] == "auto" or not c["base_url"] or not c["model"] or not self.seat_breakers[seat].allow():
+            return None
+        url = c["base_url"].rstrip("/")
+        url = url if url.endswith("/chat/completions") else url + "/chat/completions"
+        hdr = {"Authorization": f"Bearer {c['api_key']}"} if c["api_key"] else {}
+        local = c["provider"] in ("ollama", "custom")
+        t0 = time.time()
+        try:
+            r = self._cli.post(url, headers=hdr, timeout=LOCAL_TIMEOUT_S if local else TIMEOUT_S,
+                               json={"model": c["model"], "messages": messages, "max_tokens": max_tokens, "temperature": 0.6})
+            r.raise_for_status()
+            txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
+            if not txt:
+                raise ValueError("empty completion")
+            self.seat_breakers[seat].ok()
+            st = self.seat_stats[seat]
+            st["ok"] += 1; st["ms"] = int((time.time() - t0) * 1000)
+            return txt, f"{c['provider']}:{c['model']}"
+        except Exception as e:       # noqa: BLE001
+            self.seat_breakers[seat].fail()
+            self.seat_stats[seat]["err"] += 1
+            self.seat_stats[seat]["last_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+            self.stats["errors"] += 1
+            return None
+
+    def test_seat(self, seat: str) -> dict:
+        seat = resolve_seat(seat)
+        self.seat_breakers[seat] = Breaker(3, 60.0)
+        t0 = time.time()
+        r = self._seat_call(seat, [{"role": "user", "content": "Reply with the single word: ready"}], 8)
+        if r:
+            return {"ok": True, "label": r[1], "reply": r[0][:60], "ms": int((time.time() - t0) * 1000)}
+        return {"ok": False, "error": self.seat_stats[seat]["last_error"] or "provider is 'auto' or not configured", "ms": int((time.time() - t0) * 1000)}
 
     # -------------------------------------------------------------- backends
     def _free(self, messages: list[dict], max_tokens: int) -> str:
@@ -125,6 +238,11 @@ class LLMRouter:
         """(text or None, label). None => caller should fall back to offline reasoning."""
         seat = resolve_seat(seat)
         if self.enabled and not self.force_offline:
+            own = self._seat_call(seat, messages, max_tokens)
+            if own:
+                self.stats["hosted"] += 1
+                self.last_label = own[1]
+                return own
             if self.free_enabled and self.breaker.allow():
                 try:
                     t = self._free(messages, max_tokens)
@@ -166,4 +284,4 @@ class LLMRouter:
         keys = [k for k in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENAI_API_KEY") if os.environ.get(k)]
         return {"enabled": self.enabled, "force_offline": self.force_offline, "free": {"url": POLLINATIONS_URL, "model": POLLINATIONS_MODEL,
                 "timeout_s": TIMEOUT_S, "enabled": self.free_enabled, "breaker": self.breaker.state()},
-                "hosted_keys": [k.replace("_API_KEY", "").lower() for k in keys], "stats": dict(self.stats), "label": self.last_label}
+                "hosted_keys": [k.replace("_API_KEY", "").lower() for k in keys], "seat_endpoints": {k: f"{v['provider']}:{v['model']}" for k, v in self.cfg.items() if v["provider"] != "auto"}, "stats": dict(self.stats), "label": self.last_label}

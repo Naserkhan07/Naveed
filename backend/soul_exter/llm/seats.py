@@ -5,21 +5,37 @@ from __future__ import annotations
 
 from ..core.layout import PALETTE
 
+# `persona` = the open-source model this desk is meant to run (Kaggle/Ollama defaults, see kaggle/).  The token after the
+# name is only the *judging temperament*; it never leaks into ordinary Q&A (the system contract forbids pivoting to persona).
 SEATS: dict[str, dict] = {
-    "ATLAS": {"cabin": 1, "persona": "Llama-3.3-70B", "hosted": "meta-llama/llama-3.3-70b-instruct", "groq": "llama-3.3-70b-versatile",
-              "lens": "trend structure and momentum", "weights": {"trend": 1.0, "mom": 0.8, "brk": 0.5}},
-    "QUANTA": {"cabin": 2, "persona": "Qwen2.5-72B", "hosted": "qwen/qwen-2.5-72b-instruct", "groq": None,
-               "lens": "statistical edge: variance ratio, autocorrelation, skew", "weights": {"vr": 1.0, "ac": 0.6, "eff": 0.7}},
-    "MERIDIAN": {"cabin": 3, "persona": "DeepSeek-V3", "hosted": "deepseek/deepseek-chat", "groq": None,
-                 "lens": "cross-asset context: correlation blocs and currency strength", "weights": {"corr": 1.0, "ccy": 0.8, "lead": 0.5}},
-    "VOLTA": {"cabin": 4, "persona": "Mixtral-8x7B", "hosted": "mistralai/mixtral-8x7b-instruct", "groq": None,
-              "lens": "volatility and liquidity", "weights": {"vol": 1.0, "flow": 0.7, "liq": 0.6}},
-    "VECTOR": {"cabin": 5, "persona": "Phi-4", "hosted": "microsoft/phi-4", "groq": None,
-               "lens": "risk: reward-to-risk, costs and crowding", "weights": {"rr": 1.0, "cost": 0.9, "risk": 0.7}},
-    "NAVEED": {"cabin": 0, "persona": "Hermes-3-405B (CEO)", "hosted": "nousresearch/hermes-3-llama-3.1-405b", "groq": None,
-               "lens": "final ruling on split panels", "weights": {}},
-    "DROSOPHILA": {"cabin": 0, "persona": "fly scout", "hosted": "meta-llama/llama-3.3-70b-instruct", "groq": None,
-                   "lens": "the mushroom-body scout that hunts trades", "weights": {}},
+    "ATLAS": {"cabin": 1, "persona": "Llama-3.1-8B", "ollama": "llama3.1:8b", "hosted": "meta-llama/llama-3.3-70b-instruct:free", "groq": "llama-3.3-70b-versatile",
+              "role": "Chief Technical Strategist", "lens": "trend structure and momentum",
+              "bio": "20 years reading market structure: trend, swing highs/lows, breakouts, momentum and multi-timeframe alignment.",
+              "weights": {"trend": 1.0, "mom": 0.8, "brk": 0.5}},
+    "QUANTA": {"cabin": 2, "persona": "Qwen2.5-7B", "ollama": "qwen2.5:7b", "hosted": "qwen/qwen-2.5-72b-instruct:free", "groq": None,
+               "role": "Head of Quantitative Research", "lens": "statistical edge: variance ratio, autocorrelation, skew",
+               "bio": "Quant researcher: expectancy in R, variance ratio, autocorrelation, efficiency ratio, sample size and overfitting risk.",
+               "weights": {"vr": 1.0, "ac": 0.6, "eff": 0.7}},
+    "MERIDIAN": {"cabin": 3, "persona": "Mistral-7B", "ollama": "mistral:7b", "hosted": "mistralai/mistral-7b-instruct:free", "groq": None,
+                 "role": "Global Macro & Cross-Asset Strategist", "lens": "cross-asset context: correlation blocs and currency strength",
+                 "bio": "Macro strategist: currency strength, rate differentials, risk-on/off, correlation blocs and session liquidity.",
+                 "weights": {"corr": 1.0, "ccy": 0.8, "lead": 0.5}},
+    "VOLTA": {"cabin": 4, "persona": "Gemma-2-9B", "ollama": "gemma2:9b", "hosted": "google/gemma-2-9b-it:free", "groq": None,
+              "role": "Volatility & Liquidity Desk Head", "lens": "volatility and liquidity",
+              "bio": "Volatility trader: ATR regimes, vol bursts, spreads, order-flow imbalance, slippage and session liquidity.",
+              "weights": {"vol": 1.0, "flow": 0.7, "liq": 0.6}},
+    "VECTOR": {"cabin": 5, "persona": "Phi-3-Mini", "ollama": "phi3:mini", "hosted": "microsoft/phi-3-mini-128k-instruct:free", "groq": None,
+               "role": "Chief Risk Officer", "lens": "risk: reward-to-risk, costs and crowding",
+               "bio": "Risk officer: reward-to-risk, position sizing, costs, correlated exposure and drawdown control.",
+               "weights": {"rr": 1.0, "cost": 0.9, "risk": 0.7}},
+    "NAVEED": {"cabin": 0, "persona": "Qwen2.5-7B (CEO)", "ollama": "qwen2.5:7b", "hosted": "qwen/qwen-2.5-72b-instruct:free", "groq": None,
+               "role": "CEO · Head of the Floor", "lens": "final ruling on split panels",
+               "bio": "The CEO: weighs the council's dossier, the floor's recent results and total risk, then rules on split panels.",
+               "weights": {}},
+    "DROSOPHILA": {"cabin": 0, "persona": "Fly brain + Qwen2.5-7B", "ollama": "qwen2.5:7b", "hosted": "meta-llama/llama-3.3-70b-instruct:free", "groq": None,
+                   "role": "Market Hunter (fly brain)", "lens": "the mushroom-body scout that hunts trades",
+                   "bio": "The fly-brain scout: 29 glomeruli, 140 Kenyon cells, 8 output neurons; learns from dopamine on every realised R.",
+                   "weights": {}},
 }
 JUDGES = ["ATLAS", "QUANTA", "MERIDIAN", "VOLTA", "VECTOR"]
 COLORS: dict[str, str] = PALETTE["seat_colors"]
