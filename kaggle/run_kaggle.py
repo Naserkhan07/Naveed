@@ -47,13 +47,13 @@ def main():
         sh("curl -fsSL https://ollama.com/install.sh | sh")
     subprocess.Popen(["ollama", "serve"], stdout=open("/tmp/ollama.log", "w"), stderr=subprocess.STDOUT)
     if not wait_http("http://127.0.0.1:11434/api/tags"):
-        print("ollama did not start; see /tmp/ollama.log - the app will still run on free GPT / offline reasoning")
+        print("ollama did not start; see /tmp/ollama.log - the app will use the free keyless GPT instead")
     elif not os.environ.get("SKIP_PULL"):
         for m in sorted(set(MODELS.values())):
             sh(f"ollama pull {m}")
     # 2. seat config -> backend/data/llm_config.json (the app reads it at start-up; the UI can change it later)
     os.makedirs(os.path.join(ROOT, "backend", "data"), exist_ok=True)
-    cfg = {s: {"provider": "ollama", "base_url": "http://127.0.0.1:11434/v1", "model": m, "api_key": ""} for s, m in MODELS.items()}
+    cfg = {s: {"provider": "ollama", "base_url": "http://127.0.0.1:11434/v1", "model": m} for s, m in MODELS.items()}
     json.dump(cfg, open(os.path.join(ROOT, "backend", "data", "llm_config.json"), "w"), indent=1)
     # 3. frontend build
     if not os.path.isdir(os.path.join(ROOT, "frontend", "dist")):

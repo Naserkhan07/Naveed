@@ -18,7 +18,7 @@ Tests / calibration (all headless + offline, from `backend/tests`):
     python edge_study.py             # conviction / R:R calibration
     python deep_study.py             # rank-IC of the 29 fly-brain senses
 
-LLM order: keyless Pollinations (`https://text.pollinations.ai/openai`) → env keys (`OPENROUTER_API_KEY`, …) → offline reasoning. `SOUL_OFFLINE=1` forces offline.
+LLM order: the seat's own endpoint (Ollama / OpenAI-compatible URL) → keyless free chain (Pollinations, LLM7) → if the server has no internet, the browser makes the call itself. No API keys anywhere. `SOUL_OFFLINE=1` is a test-only switch that disables all LLM calls.
 
 ---
 
@@ -28,7 +28,7 @@ LLM order: keyless Pollinations (`https://text.pollinations.ai/openai`) → env 
 
 **Judges.** Six professional personas (ATLAS technical, QUANTA quant, MERIDIAN macro, VOLTA vol/liquidity, VECTOR risk, NAVEED CEO). Each vote carries `confidence`, `thesis` and `risk`. Judges get the floor's live win/loss record and their own notes, and calibrate (`judges.learn`) when their side was wrong. After each verdict a speech bubble appears over the judge — click it to open that desk's chat. In the debate room the six hold a real 6-turn conversation (open → challenge → question → answer → support → conclude); the conclusion becomes a rule written into every participant's notes.
 
-**LLM routing.** Per seat: own endpoint (Ollama / any OpenAI-compatible URL + key) → free keyless Pollinations → env keys → offline reasoning. Configure in *Settings → LLM seats* (keys masked, reveal, Test button). File: `backend/data/llm_config.json` (gitignored).
+**LLM routing.** Per seat: own endpoint (Ollama / any OpenAI-compatible URL) → free keyless chain → your browser. Configure in *Settings → LLM seats*.
 
 **Markets.** *Settings → Markets & symbols* switches whole classes or single symbols; disabled assets get zero hunger and are skipped by the correlation finders.
 
@@ -40,10 +40,12 @@ LLM order: keyless Pollinations (`https://text.pollinations.ai/openai`) → env 
 
 **Tests.** `python tests/smoke_engine.py 60 8` and `python tests/mt5_bridge_test.py`.
 
-> The UI has no login. If you expose it through a public tunnel, treat the URL as a secret (it shows the bridge token and can change LLM keys).
+> The UI has no login. If you expose it through a public tunnel, treat the URL as a secret (it shows the bridge token and can change the LLM settings).
 
-## Chat: what answers when no language model is reachable
+## Chat: how desks always get a real model
 
-Desks answer through, in order: per-seat endpoint → keyless free chain (Pollinations POST, llm7, Pollinations GET; each with its own 20 s breaker) → hosted keys → Wikipedia/DuckDuckGo lookup for factual questions → built-in knowledge (`llm/kb.py`: ~140 trading, finance, science and tech entries, country facts, maths, units, dates, jokes) plus **live-floor intents** (performance, open trades, why the last trade was accepted/rejected and by whom, what the fly is hunting, judge calibration, any symbol's price/regime). Multi-part questions are answered part by part. Unknown questions get an honest reply, never an invented fact.
+There is no offline chat mode and no API keys. A question goes to the server, which tries the seat's own endpoint, then the keyless free chain (Pollinations, LLM7; each with its own 20 s breaker). If the server has no internet, it returns the finished prompt (persona + live floor status + history) and **your browser** sends it to the same keyless providers (`frontend/src/llm.ts`), then reports the reply back so history and the chatroom stay in sync. If neither can reach a model, the desk says so plainly and does not guess.
 
-`POST /api/llm/diagnose` (button: Settings → LLM seats → *Check LLM connection*, or the orange bar in the chat dock) tries every path and reports the exact error. The sandbox this was built in has no outbound internet, so free/web paths were not exercised there — run the backend on Kaggle / your PC (or set `OPENROUTER_API_KEY` / `GROQ_API_KEY`) for full ChatGPT-style answers. Regression test: `python tests/offline_chat_test.py`.
+Cabin verdicts run on the server, so without server-side internet they use the quantitative rule-check, every such vote labelled `rules:no-LLM`. Run the backend on Kaggle / your PC (or point seats at Ollama) to have LLMs judge every trade.
+
+`POST /api/llm/diagnose` and the *Check LLM connection* button (Settings → LLM seats) test both the server path and the browser path and show each error.

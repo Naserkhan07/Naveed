@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from .core import layout as L
 from .engine.floor import FloorEngine, SIM_HZ
-from .llm.seats import COLORS, JUDGES, SEATS
+from .llm.seats import COLORS, JUDGES, SEATS, resolve_seat
 from .market.live import LiveFeed
 from .market.micro import MicroModule
 
@@ -189,8 +189,30 @@ def api_chatroom_say(body: SayIn):
             seat = s
     r = e.chat(seat, body.text, [])
     rep = {"t": round(e.sim_t, 1), "name": seat, "text": r["answer"], "color": COLORS[seat], "label": r["label"]}
+    if not r["ok"]:      # the browser makes the call and then posts the reply via /api/chatroom/reply
+        return {"posted": msg, "reply": None, "pending": {"seat": seat, "messages": r["messages"], "color": COLORS[seat]}}
     e.chatroom.append(rep)
     return {"posted": msg, "reply": rep}
+
+
+class ReplyIn(BaseModel):
+    seat_id: str
+    text: str
+    label: str = ""
+    question: str = ""
+    room: bool = False
+
+
+@app.post("/api/chat/remember")
+def api_chat_remember(body: ReplyIn):
+    """store a reply the browser obtained from a free model, so history and the chatroom stay in sync"""
+    e = engine()
+    seat = resolve_seat(body.seat_id)
+    if body.room:
+        e.chatroom.append({"t": round(e.sim_t, 1), "name": seat, "text": body.text[:2000], "color": COLORS[seat], "label": body.label})
+    elif body.question:
+        e.remember(seat, body.question, body.text, body.label)
+    return {"ok": True}
 
 
 @app.get("/api/universe")
@@ -199,15 +221,15 @@ def api_universe():
 
 
 @app.get("/api/llm/config")
-def api_llm_get(reveal: bool = False):
-    return engine().router.get_cfg(reveal)
+def api_llm_get():
+    return engine().router.get_cfg()
 
 
 @app.post("/api/llm/config")
 def api_llm_set(body: dict):
     e = engine()
     e.router.set_cfg(body.get("seats", body))
-    return e.router.get_cfg(False)
+    return e.router.get_cfg()
 
 
 @app.post("/api/llm/diagnose")

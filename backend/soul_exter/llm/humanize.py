@@ -70,13 +70,13 @@ def trim_words(text: str, limit: int = 170) -> str:
     return cut.rstrip(",;:") + "…"
 
 
-def humanize(text: str, question: str, salt: str = "", offline: bool = False) -> str:
+def humanize(text: str, question: str, salt: str = "") -> str:
     text = re.sub(r"\s+\n", "\n", text.strip())
     text = trim_words(text)
     rng = _rng(question, salt)
     ends_q = text.rstrip().endswith("?")
     greeting = bool(re.match(r"^\s*(hi|hello|hey|thanks|thank you|good (morning|evening|afternoon))\b", question, re.I))
-    if not greeting and not offline and question.strip().endswith("?") and rng.random() < 0.25 and not text.lower().startswith(("sure", "happy", "good question", "glad")):
+    if not greeting and question.strip().endswith("?") and rng.random() < 0.25 and not text.lower().startswith(("sure", "happy", "good question", "glad")):
         text = rng.choice(OPENERS) + text[0].lower() + text[1:] if text[:2].isalpha() and not text[:2].isupper() else text
     # follow-up: ~18 %, never after a '?', never when the answer already asks something
     if not ends_q and "?" not in text[-80:] and rng.random() < FOLLOW_RATE:

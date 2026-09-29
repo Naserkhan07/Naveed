@@ -517,7 +517,7 @@ class FloorEngine:
             elif res.done():
                 out = res.result()
             elif self.clock - w.data["wait0"] > LLM_WAIT_S:
-                out = {"seat": "NAVEED", "vote": "reject", "reason": "LLM timeout — stand down.", "label": "offline:reasoning", "score": -1,
+                out = {"seat": "NAVEED", "vote": "reject", "reason": "LLM timeout — stand down.", "label": "rules:no-LLM", "score": -1,
                        "confidence": 50, "thesis": "No ruling came back in time; default to capital preservation.", "risk": "missed opportunity"}
             if out is not None and w.timer <= 0:
                 self.pending_reviews.pop(w.id, None)
@@ -720,10 +720,10 @@ class FloorEngine:
                 try:
                     text, label = f.result()
                 except Exception:       # noqa: BLE001
-                    text, label = None, "offline:reasoning"
-                self._turn_done(c, role, seat, text or self._line(role, seat, c), label if text else "offline:reasoning")
+                    text, label = None, "rules:no-LLM"
+                self._turn_done(c, role, seat, text or self._line(role, seat, c), label if text else "rules:no-LLM")
             elif self.clock - c["w0"] > LLM_WAIT_S:
-                self._turn_done(c, role, seat, self._line(role, seat, c), "offline:reasoning")
+                self._turn_done(c, role, seat, self._line(role, seat, c), "rules:no-LLM")
         elif self.sim_t >= c["next_t"]:
             role, seat = c["order"][c["i"]]
             if self.judges.llm_possible() and role != "open":
@@ -731,7 +731,7 @@ class FloorEngine:
                 prompt = self._debate_prompt(seat, role, c)
                 c["fut"] = self.judges.pool.submit(lambda: self.router.complete(seat, prompt, max_tokens=110))
             else:
-                self._turn_done(c, role, seat, self._line(role, seat, c), "offline:reasoning")
+                self._turn_done(c, role, seat, self._line(role, seat, c), "rules:no-LLM")
         if self.settings.ceo_doctrine and self.sim_t >= self._doctrine_next:
             self._doctrine_next = self.sim_t + 240.0
             pb = sorted(((k, b) for k, b in self.playbook.items() if b["n"] >= 3), key=lambda kv: -kv[1]["sumR"] / kv[1]["n"])
@@ -787,10 +787,19 @@ class FloorEngine:
         self.think(seat, 8.0)
         hist = history if history is not None else self.chats[seat]
         rep = self.router.chat(seat, question, hist, context, self.floor_snapshot())
+        if rep.ok:
+            self.remember(seat, question, rep.text, rep.label)
+        out = {"seat": seat, "answer": rep.text, "label": rep.label, "ms": rep.ms, "color": COLORS[seat], "ok": rep.ok}
+        if not rep.ok:
+            out["why"] = self.router.last_error or "no provider answered"
+            out["messages"] = rep.messages       # ready-made prompt: the operator's browser sends it to a keyless free model
+        return out
+
+    def remember(self, seat, question: str, answer: str, label: str):
+        seat = resolve_seat(seat)
         self.chats[seat].append({"role": "user", "content": question})
-        self.chats[seat].append({"role": "assistant", "content": rep.text, "label": rep.label})
+        self.chats[seat].append({"role": "assistant", "content": answer, "label": label})
         del self.chats[seat][:-60]
-        return {"seat": seat, "answer": rep.text, "label": rep.label, "ms": rep.ms, "color": COLORS[seat]}
 
     def _say(self, seat: str, ok: bool, conf: int, text: str, t: Ticket):
         self.say[seat] = {"ok": ok, "conf": int(conf), "text": text[:120], "sym": t.sym, "tid": t.id, "until": self.sim_t + 12.0}
@@ -802,7 +811,7 @@ class FloorEngine:
         return o
 
     def floor_snapshot(self) -> dict:
-        """compact read-only view of the live floor, used to answer questions about it (offline) or to ground the LLM"""
+        """compact read-only view of the live floor, used to answer questions about it to ground the LLM"""
         with self.lock:
             snap = self.hunter.snapshot()
             tape = {r["s"]: r for r in self.tape.summary()}
@@ -933,7 +942,7 @@ class FloorEngine:
             js = self.judge_state.get(name, {"state": "idle", "ticket": None})
             c = self.router.cfg[name]
             out.append({"id": name, "cabin": s["cabin"], "persona": s["persona"], "role": s["role"], "bio": s["bio"], "lens": s["lens"], "color": COLORS[name],
-                        "model": (f"{c['provider']}:{c['model']}" if c["provider"] != "auto" else "auto (free GPT → offline)"),
+                        "model": (f"{c['provider']}:{c['model']}" if c["provider"] != "auto" else "auto (free GPT)"),
                         "bias": round(self.judges.bias.get(name, 0.0), 3), "notes": self.judges.notes.get(name, [])[-3:],
                         "state": js["state"], "ticket": js["ticket"], "label": self.router.last_label,
                         "messages": len(self.chats[name]) // 2})

@@ -1,5 +1,6 @@
 """Verdicts.  Each judge is a persona with a quantitative offline reasoner (always available, instant)
-and an optional LLM vote (free keyless GPT -> hosted keys) that runs in a worker thread."""
+and an LLM vote (seat endpoint or the keyless free chain) that runs in a worker thread. When no LLM is reachable the
+quantitative reasoner keeps the floor moving and every such vote is labelled "rules:no-LLM"."""
 from __future__ import annotations
 
 import hashlib
@@ -181,7 +182,7 @@ class JudgeService:
             return True
         if r.free_enabled and r.breaker.allow():
             return True
-        return r.hosted_enabled and any(os.environ.get(k) for k in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENAI_API_KEY"))
+        return False
 
     # ------------------------------------------------------------- learning
     def learn(self, t: Ticket):
@@ -204,7 +205,7 @@ class JudgeService:
     def offline_vote(self, seat: str, cabin: int, t: Ticket, crowd: int, suffix: str = "") -> Vote:
         score, why = baseline(seat, t, crowd, self.bias.get(seat, 0.0))
         conf, thesis, risk = enrich(seat, t, score > 0, score, why)
-        return Vote(seat, cabin, score > 0, score, why + suffix, "offline:reasoning", 0, conf, thesis, risk)
+        return Vote(seat, cabin, score > 0, score, why + suffix, "rules:no-LLM", 0, conf, thesis, risk)
 
     def add_note(self, seat: str, text: str):
         if seat in self.notes:
@@ -215,7 +216,7 @@ class JudgeService:
         score, why = baseline(seat, t, crowd, self.bias.get(seat, 0.0))
         ap = score > 0
         conf, thesis, risk = enrich(seat, t, ap, score, why)
-        base = Vote(seat, cabin, ap, score, why, "offline:reasoning", 0, conf, thesis, risk)
+        base = Vote(seat, cabin, ap, score, why, "rules:no-LLM", 0, conf, thesis, risk)
         if not self.llm_possible():
             return base
         prior = list(t.votes)
@@ -229,7 +230,7 @@ class JudgeService:
                 if pv:
                     return Vote(seat, cabin, pv["approve"], score, pv["reason"] or why, label, int((time.time() - t0) * 1000),
                                 pv["confidence"], pv["thesis"] or thesis, pv["risk"] or risk)
-            return Vote(seat, cabin, base.approve, score, why, "offline:reasoning", int((time.time() - t0) * 1000), conf, thesis, risk)
+            return Vote(seat, cabin, base.approve, score, why, "rules:no-LLM", int((time.time() - t0) * 1000), conf, thesis, risk)
 
         return self.pool.submit(work)
 
@@ -243,7 +244,7 @@ class JudgeService:
         confs = [v.confidence for v in t.votes if v.approve == approve] or [55]
         thesis = (f"Council leaned {appr}-{5 - appr}; the case for {'taking' if approve else 'passing on'} {t.sym} rests on "
                   f"{max(t.votes, key=lambda v: abs(v.score)).seat}'s read: {max(t.votes, key=lambda v: abs(v.score)).reason[:90]}" if t.votes else why)
-        base = {"seat": "NAVEED", "vote": "approve" if approve else "reject", "reason": why, "label": "offline:reasoning", "score": round(s, 3),
+        base = {"seat": "NAVEED", "vote": "approve" if approve else "reject", "reason": why, "label": "rules:no-LLM", "score": round(s, 3),
                 "confidence": int(np.clip(np.mean(confs) * 0.9 + abs(s) * 30, 20, 95)), "thesis": thesis,
                 "risk": "correlated exposure and regime change" if crowd else "regime change / slippage"}
         if not self.llm_possible():

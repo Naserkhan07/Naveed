@@ -5,8 +5,8 @@ export function Footer({ extra }: { extra: Extra | null }) {
   const llm = extra?.llm;
   return (
     <footer className="footer">
-      <span>LLM <b>{llm ? (llm.enabled ? llm.label : 'off (offline reasoning)') : '—'}</b></span>
-      {llm && <span>calls free <b>{llm.stats.free}</b> · hosted <b>{llm.stats.hosted}</b> · offline <b>{llm.stats.offline}</b></span>}
+      <span>LLM <b>{llm ? (llm.enabled ? llm.label : 'off') : '—'}</b></span>
+      {llm && <span>server calls: free <b>{llm.stats.free}</b> · own endpoint <b>{llm.stats.own}</b> · unreachable <b>{llm.stats.failed}</b></span>}
       <span className="grow" />
       {ev && <span className="ev"><span className="k">{ev.kind}</span> {ev.text}</span>}
     </footer>

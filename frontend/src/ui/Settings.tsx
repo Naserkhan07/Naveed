@@ -9,7 +9,7 @@ export interface SettingsT {
   markets: Record<string, boolean>; off: string[]; mt5_auto: boolean; mt5_lots: number; mt5_allow_synth: boolean;
 }
 interface Uni { markets: Record<string, boolean>; classes: Record<string, { sym: string; name: string; on: boolean }[]>; enabled: number; total: number }
-interface SeatCfg { provider: string; base_url: string; model: string; api_key: string; has_key: boolean; default_model: string; role: string; stats: { ok: number; err: number; ms: number; last_error: string } }
+interface SeatCfg { provider: string; base_url: string; model: string; default_model: string; role: string; stats: { ok: number; err: number; ms: number; last_error: string } }
 interface LlmCfg { seats: Record<string, SeatCfg>; presets: Record<string, { base_url: string; note: string }> }
 interface Mt5S { bridge: { connected: boolean; age_s: number | null; account: { login?: number; server?: string; demo?: boolean; balance?: number; equity?: number; currency?: string } | null }; counts: Record<string, number>; recent: { id: string; symbol: string; side: string; lots: number; status: string; msg: string; mt5_ticket: number | null; price: number | null }[]; server: string }
 
@@ -52,8 +52,8 @@ function General({ s, set }: { s: SettingsT; set: (p: Partial<SettingsT>) => voi
       <Row title="Simulation speed" hint={`${s.speed}× (0.25 – 32). Live-price checks need ≤ 1.5×`}><input type="range" min={0.25} max={32} step={0.25} value={s.speed} onChange={(e) => set({ speed: parseFloat(e.target.value) })} /></Row>
       <Row title="Ambient people" hint={`${s.ambient} background traders, labelled with the assets the fly-brain is hunting`}><input type="range" min={0} max={24} step={1} value={s.ambient} onChange={(e) => set({ ambient: parseInt(e.target.value) })} /></Row>
       <Tog k="live" title="Live market data" hint="merge keyless Binance / Yahoo bars into the tape (needs network)" />
-      <Tog k="llm" title="LLM judges" hint="off = every judge reasons offline from the numbers" />
-      <Tog k="free_gpt" title="Free GPT (Pollinations)" hint="keyless default for seats without their own endpoint; then env-key providers; then offline reasoning" />
+      <Tog k="llm" title="LLM judges" hint="off = judges use the quantitative rule-check instead of a language model" />
+      <Tog k="free_gpt" title="Free GPT (Pollinations)" hint="keyless free model for seats without their own endpoint (the server tries first; chat falls back to your browser)" />
       <Tog k="ceo_doctrine" title="CEO doctrine" hint="every ~4 sim-minutes NAVEED writes a short doctrine note from the results" />
       <div className="muted small" style={{ paddingTop: 10 }}>Settings persist on the server. Seed {s.seed} applies at the next server start.</div>
     </>
@@ -98,17 +98,16 @@ function Markets() {
 
 function Llm({ layout }: { layout: Layout | null }) {
   const [cfg, setCfg] = useState<LlmCfg | null>(null);
-  const [reveal, setReveal] = useState(false);
   const [test, setTest] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState<Record<string, Partial<SeatCfg>>>({});
-  const load = (r = false) => getJSON<LlmCfg>('/api/llm/config' + (r ? '?reveal=1' : '')).then(setCfg).catch(() => {});
+  const load = () => getJSON<LlmCfg>('/api/llm/config').then(setCfg).catch(() => {});
   useEffect(() => { load(); }, []);
   if (!cfg) return <div className="pad muted">loading…</div>;
   const val = (seat: string, k: keyof SeatCfg) => (dirty[seat]?.[k] ?? cfg.seats[seat][k]) as string;
   const edit = (seat: string, k: keyof SeatCfg, v: string) => setDirty((d) => ({ ...d, [seat]: { ...d[seat], [k]: v } }));
   async function save(seat?: string) {
     const body = seat ? { [seat]: dirty[seat] ?? {} } : dirty;
-    await postJSON('/api/llm/config', { seats: body }); setDirty(seat ? (d) => { const n = { ...d }; delete n[seat]; return n; } : {}); await load(reveal);
+    await postJSON('/api/llm/config', { seats: body }); setDirty(seat ? (d) => { const n = { ...d }; delete n[seat]; return n; } : {}); await load();
   }
   async function runTest(seat: string) {
     if (dirty[seat]) await save(seat);
@@ -124,13 +123,12 @@ function Llm({ layout }: { layout: Layout | null }) {
   }
   return (
     <>
-      <div className="note-box">Every seat can use its <b>own model and endpoint</b>. Use <b>auto</b> for the free keyless GPT (default). For open-source models on a Kaggle GPU, choose <b>ollama</b> (<span className="mono">http://127.0.0.1:11434/v1</span>) — or any OpenAI-compatible URL (OpenRouter, Groq, Together, HF, vLLM). Keys are stored on the server only and are masked unless you reveal them.</div>
+      <div className="note-box">By default every desk uses a <b>free keyless GPT</b> — no account, no key. If the server has no internet, chat is answered through <b>your browser</b> instead. To run open-source models on a Kaggle GPU or your own PC, give a seat the <b>ollama</b> URL (<span className="mono">http://127.0.0.1:11434/v1</span>) or any OpenAI-compatible URL.</div>
       <Diagnose />
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span className="muted small">Apply to all seats:</span>
         {Object.keys(cfg.presets).map((p) => <button key={p} className="btn sm" title={cfg.presets[p].note} onClick={() => applyAll(p)}>{p}</button>)}
         <span className="grow" />
-        <button className={'btn sm' + (reveal ? ' on' : '')} onClick={() => { setReveal(!reveal); load(!reveal); }}>{reveal ? 'Hide keys' : 'Reveal keys'}</button>
         <button className="btn pri sm" onClick={() => save()}>Save all</button>
       </div>
       {SEAT_ORDER.map((seat) => {
@@ -145,7 +143,6 @@ function Llm({ layout }: { layout: Layout | null }) {
             <input className="field" placeholder={c.default_model || 'model name'} value={val(seat, 'model')} onChange={(e) => edit(seat, 'model', e.target.value)} />
             <div className="full">
               <input className="field" placeholder="base URL (OpenAI-compatible /v1)" value={val(seat, 'base_url')} onChange={(e) => edit(seat, 'base_url', e.target.value)} />
-              <input className="field" type={reveal ? 'text' : 'password'} placeholder="API key (optional)" value={val(seat, 'api_key')} onChange={(e) => edit(seat, 'api_key', e.target.value)} style={{ maxWidth: 190 }} />
               <button className="btn sm" onClick={() => runTest(seat)}>Test</button>
             </div>
             {(test[seat] || c.stats.last_error) && <div className="full small" style={{ color: test[seat]?.startsWith('✓') ? 'var(--up)' : 'var(--mut)' }}>{test[seat] ?? `last error: ${c.stats.last_error}`}</div>}

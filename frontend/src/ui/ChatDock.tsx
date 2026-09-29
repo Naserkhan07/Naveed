@@ -1,7 +1,7 @@
-import { Diagnose } from './Diagnose';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatMsg, Extra, Layout } from '../types';
 import { postJSON } from '../api';
+import { askBrowser, resolveReply, unreachableText, type Served } from '../llm';
 import { SEAT_ORDER, SEAT_ROLE, seatColor } from './common';
 
 export const ALL = '@ALL', ROOM = '@ROOM';
@@ -41,19 +41,27 @@ export function ChatDock({ layout, extra, target, tradeId, onTarget, onClearTrad
     setText(''); setBusy(true);
     const k = key;
     push(k, { role: 'user', content: question });
+    const bubble = (r: Served) => ({ role: 'assistant' as const, content: r.answer, label: r.label, ms: r.ms, seat: r.seat, color: r.color });
     try {
       if (target === ALL) {
-        const r = await postJSON<{ answers: { seat: string; answer: string; label: string; ms: number; color: string }[] }>('/api/debate/ask', { question });
-        push(k, ...r.answers.map((a) => ({ role: 'assistant' as const, content: a.answer, label: a.label, ms: a.ms, seat: a.seat, color: a.color })));
+        const r = await postJSON<{ answers: Served[] }>('/api/debate/ask', { question });
+        const done = await Promise.all(r.answers.map((a) => resolveReply(a, question, true)));
+        push(k, ...done.map(bubble));
       } else if (target === ROOM) {
-        await postJSON('/api/chatroom/say', { text: question, name: 'operator' });
+        const r = await postJSON<{ reply: unknown; pending?: { seat: string; messages: { role: string; content: string }[]; color: string } }>('/api/chatroom/say', { text: question, name: 'operator' });
+        if (r.pending) {
+          let text: string, label: string;
+          try { const b = await askBrowser(r.pending.messages); text = b.text; label = b.label; }
+          catch (e) { text = unreachableText('no internet from the server', (e as Error).message); label = 'no language model reachable'; }
+          await postJSON('/api/chat/remember', { seat_id: r.pending.seat, text, label, room: true });
+        }
       } else if (tradeId) {
-        const r = await postJSON<{ seat: string; answer: string; label: string; ms: number; color: string }>(`/api/trades/${tradeId}/chat`, { question, seat_id: target });
-        push(k, { role: 'assistant', content: r.answer, label: r.label, ms: r.ms, seat: r.seat, color: r.color });
+        const r = await postJSON<Served>(`/api/trades/${tradeId}/chat`, { question, seat_id: target });
+        push(k, bubble(await resolveReply(r, question, true)));
       } else {
-        const hist = list.slice(-12).map((m) => ({ role: m.role, content: m.content }));
-        const r = await postJSON<{ seat: string; answer: string; label: string; ms: number; color: string }>('/api/chat', { seat_id: target, question, history: hist });
-        push(k, { role: 'assistant', content: r.answer, label: r.label, ms: r.ms, seat: r.seat, color: r.color });
+        const hist = list.slice(-12).map((m) => ({ role: m.role, content: m.content, label: m.label }));
+        const r = await postJSON<Served>('/api/chat', { seat_id: target, question, history: hist });
+        push(k, bubble(await resolveReply(r, question, true)));
       }
     } catch (e) {
       push(k, { role: 'assistant', content: `Request failed (${(e as Error).message}). The desk could not be reached.`, label: 'error' });
@@ -77,9 +85,6 @@ export function ChatDock({ layout, extra, target, tradeId, onTarget, onClearTrad
         <span className="muted">{target === ALL ? 'debate table — every judge answers' : target === ROOM ? 'shared room' : SEAT_ROLE[target]}</span>
         {tradeId && !target.startsWith('@') && <button className="chip" onClick={onClearTrade} title="leave trade context">trade {tradeId} ✕</button>}
       </div>
-      {extra?.llm?.label?.startsWith('offline') && target !== ROOM && (
-        <div className="offbar"><b>Offline mode</b> — no language model is reachable from the server, so desks answer from built-in trading knowledge and live floor data.<Diagnose compact /></div>
-      )}
       <div className="msgs">
         {target === ROOM ? room.map((m, i) => (
           <div key={i} className={'bub ' + (m.name === 'operator' ? 'user' : 'bot')} style={{ '--c': m.color } as React.CSSProperties}>
