@@ -9,7 +9,7 @@ import { Screens } from './screens';
 import { Person, animatePerson, fitLabel, makePerson, setAccent, setCarry, setLabel, setSitting } from './people';
 import { canvas, canvasTexture, rng } from './textures';
 
-interface Actor { p: Person; tx: number; tz: number; th: number; x: number; z: number; h: number; sit: boolean; born: number; npc: boolean; }
+interface Actor { p: Person; tx: number; tz: number; th: number; x: number; z: number; h: number; sit: boolean; born: number; npc: boolean; sym: string; }
 
 /** speech bubble over a judge: verdict, confidence, one-line thesis. Click = open that desk's chat. */
 class Bubble {
@@ -61,7 +61,7 @@ export class HallScene {
   theme: Theme = 'night';
   onPickSeat: (seat: string) => void = () => {};
   onPickTicket: (id: string) => void = () => {};
-  onDblTicket: (id: string) => void = () => {};
+  onPickNpc: (sym: string) => void = () => {};
   private actors = new Map<string, Actor>();
   private raf = 0; private last = performance.now(); private t = 0;
   private sun: THREE.DirectionalLight; private hemi: THREE.HemisphereLight;
@@ -163,7 +163,7 @@ export class HallScene {
     this.resize();
     const dom = this.renderer.domElement;
     dom.addEventListener('pointerdown', (e) => { this.downAt = { x: e.clientX, y: e.clientY }; });
-    dom.addEventListener('pointerup', (e) => { if (Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) < 5) this.pick(e); });
+    dom.addEventListener('pointerup', (e) => { if (Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) < 6) this.pick(e); });
     this.loop();
   }
 
@@ -175,22 +175,38 @@ export class HallScene {
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
   }
 
-  private pick(e: MouseEvent, dbl = false) {
+  /** screen-space picking: the click lands on whichever person is closest on screen (body, legs, head or name tag) — no exact spot needed */
+  private pick(e: MouseEvent) {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const v = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-    this.ray.setFromCamera(v, this.camera);
-    const targets: THREE.Object3D[] = [];
-    this.rooms.pickables.forEach((p) => targets.push(p.obj));
-    this.actors.forEach((a, id) => { if (id.startsWith('w_')) targets.push(a.p); });
-    const hits = this.ray.intersectObjects(targets, true);
-    if (!hits.length) return;
-    let o: THREE.Object3D | null = hits[0].object;
-    while (o) {
-      const pk = this.rooms.pickables.find((p) => p.obj === o);
-      if (pk) { if (!dbl) this.onPickSeat(pk.seat); return; }
-      for (const [id, a] of this.actors) if (a.p === o && id.startsWith('w_')) { this.selected = id; this.onPickTicket(id.slice(2)); return; }
-      o = o.parent;
-    }
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const cam = this.camera;
+    const P = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    const scr = (v: THREE.Vector3): [number, number, number] => { const q = v.clone().project(cam); return [(q.x + 1) / 2 * rect.width, (1 - q.y) / 2 * rect.height, q.z]; };
+    let best: { score: number; dist: number; act: () => void } | null = null;
+    const consider = (obj: THREE.Object3D, act: () => void) => {
+      obj.getWorldPosition(P);
+      a.set(P.x, P.y + 0.05, P.z); b.set(P.x, P.y + 1.85, P.z); c.set(P.x, P.y + 2.35, P.z);
+      const [ax, ay, az] = scr(a), [bx, by, bz] = scr(b), [lx, ly] = scr(c);
+      if (az > 1 || bz > 1) return;
+      const pxH = Math.hypot(bx - ax, by - ay);
+      const thr = Math.max(26, pxH * 0.55);
+      // distance to the body segment; the name tag counts as part of the person
+      const vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy || 1;
+      const t = Math.max(0, Math.min(1, ((cx - ax) * vx + (cy - ay) * vy) / L2));
+      const dBody = Math.hypot(cx - (ax + vx * t), cy - (ay + vy * t));
+      const dTag = Math.hypot((cx - lx) * 0.55, cy - ly);
+      const d = Math.min(dBody, dTag);
+      if (d > thr) return;
+      const score = d / thr, dist = P.distanceTo(cam.position);
+      if (!best || score < best.score - 0.02 || (Math.abs(score - best.score) <= 0.02 && dist < best.dist)) best = { score, dist, act };
+    };
+    this.rooms.pickables.forEach((p) => consider(p.obj, () => this.onPickSeat(p.seat)));
+    this.actors.forEach((ac, id) => {
+      if (!ac.p.visible) return;
+      if (id.startsWith('w_')) consider(ac.p, () => { this.selected = id; this.onPickTicket(id.slice(2)); });
+      else consider(ac.p, () => { this.selected = id; this.onPickNpc(ac.sym); });
+    });
+    (best as { act: () => void } | null)?.act();
   }
   select(ticket: string | null) { this.selected = ticket ? 'w_' + ticket : null; }
 
@@ -210,10 +226,10 @@ export class HallScene {
         const p = makePerson(w.k === 'npc' ? 0x94a3b8 : hex(w.c), seed, w.k === 'npc' ? [0x243043, 0x2d3748, 0x3b4658, 0x1f2a3a][seed % 4] : 0x1e2735);
         p.position.set(w.x, 0, w.z); p.rotation.y = w.h;
         this.scene.add(p);
-        a = { p, tx: w.x, tz: w.z, th: w.h, x: w.x, z: w.z, h: w.h, sit: w.sit, born: this.t, npc: w.k === 'npc' };
+        a = { p, tx: w.x, tz: w.z, th: w.h, x: w.x, z: w.z, h: w.h, sit: w.sit, born: this.t, npc: w.k === 'npc', sym: w.l };
         this.actors.set(w.id, a);
       }
-      a.tx = w.x; a.tz = w.z; a.th = w.h; a.sit = w.sit;
+      a.tx = w.x; a.tz = w.z; a.th = w.h; a.sit = w.sit; a.sym = w.l;
       setSitting(a.p, w.sit);
       setCarry(a.p, w.k !== 'npc');
       if (w.k === 'npc') setLabel(a.p, w.l, w.c || '#94a3b8', true);

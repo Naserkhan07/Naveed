@@ -7,6 +7,7 @@ import { BrainHUD } from './ui/BrainHUD';
 import { Orders } from './ui/Orders';
 import { Council } from './ui/Council';
 import { Dossier } from './ui/Dossier';
+import { AssetCard } from './ui/AssetCard';
 import { ALL, ChatDock } from './ui/ChatDock';
 import { Settings, SettingsT } from './ui/Settings';
 import { Footer } from './ui/Footer';
@@ -23,6 +24,7 @@ export function App() {
   const [tab, setTab] = useState<'orders' | 'chat' | 'council' | 'brain'>('orders');
   const [sideOpen, setSideOpen] = useState(true);
   const [dossier, setDossier] = useState<string | null>(null);
+  const [asset, setAsset] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [chatTarget, setChatTarget] = useState('ATLAS');
   const [tradeId, setTradeId] = useState<string | null>(null);
@@ -55,6 +57,7 @@ export function App() {
     scene.current = s;
     s.onPickSeat = (seat) => { setChatTarget(seat); setTradeId(null); setTab('chat'); setSideOpen(true); };
     s.onPickTicket = (id) => { setSelected(id); setDossier(id); };
+    s.onPickNpc = (sym) => { if (sym) setAsset(sym); };
     (window as unknown as { __hall: HallScene }).__hall = s;
     return () => { s.dispose(); scene.current = null; };
   }, [layout]);
@@ -103,7 +106,7 @@ export function App() {
             <button className={'chipbtn' + (freefly ? ' on' : '')} onClick={toggleFly} title="Free-fly viewer (F)">⌖ 360° fly</button>
           </div>
           {freefly && <div className="hint"><b>Free-fly</b> · drag = look · W A S D = move · Q / E = down / up · Shift = fast · wheel = speed · Esc = exit</div>}
-          {!freefly && <div className="vtag"><i />click a trader for the full dossier · click a judge to chat · keys 1–8 views</div>}
+          {!freefly && <div className="vtag"><i />click any person — traders open their full dossier, judges open their chat · keys 1–8 views</div>}
         </div>
         <aside className={'side' + (sideOpen ? '' : ' closed')}>
           <div className="tabs">
@@ -122,6 +125,7 @@ export function App() {
       </div>
       <Footer extra={extra} />
       {dossier && <Dossier id={dossier} layout={layout} onClose={() => setDossier(null)} onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setTab('chat'); setSideOpen(true); }} />}
+      {asset && !dossier && <AssetCard sym={asset} extra={extra} onClose={() => setAsset(null)} onOpenTrade={(id) => { setAsset(null); setDossier(id); }} />}
       {showSettings && <Settings layout={layout} onClose={() => setShowSettings(false)} onChanged={(s) => setSpeed(s.speed)} />}
     </div>
   );
