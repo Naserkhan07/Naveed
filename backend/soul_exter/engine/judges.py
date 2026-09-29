@@ -152,7 +152,7 @@ def enrich(seat: str, t: Ticket, approve: bool, score: float, why: str) -> tuple
     D = "long" if t.direction > 0 else "short"
     tgt = f"target {t.tp:.5g} is {t.rr:.2f}R against a {t.sl:.5g} stop"
     m = why.rstrip(". ").rsplit(":", 1)[0] if ":" in why else why.rstrip(". ")
-    m = m[0].lower() + m[1:] if m else m
+    m = m[0].lower() + m[1:] if m and not m[:3].isupper() and not m.startswith("R:R") else m
     if approve:
         thesis = f"{D} {t.sym} has an edge here: {m}; {tgt}."
     else:

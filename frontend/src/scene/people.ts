@@ -35,6 +35,8 @@ function suit(c: number) {
   return s;
 }
 
+const HIT = new THREE.CylinderGeometry(0.55, 0.55, 2.1, 8);
+const HIT_MAT = new THREE.MeshBasicMaterial({ visible: false });
 const HIP_Y = 0.94;            // standing hip height
 const SIT_DROP = 0.30;         // hips drop when seated
 
@@ -96,6 +98,8 @@ export function makePerson(accent: string | number, seed = 0, suitColor = 0x1e27
   const face = new THREE.Mesh(G.cardFace, cardMat); face.position.z = 0.012; card.add(face);
   card.position.set(0, 0.34, 0.34); card.rotation.x = -0.35; card.visible = false; torso.add(card);
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = false; });
+  // generous invisible hit volume so a person is easy to click, even far away or while walking
+  const hit = new THREE.Mesh(HIT, HIT_MAT); hit.position.y = 1.0; g.add(hit);
 
   g.userData = {
     rig: { root, thighL: lL.th, thighR: lR.th, shinL: lL.kn, shinR: lR.kn, armL: aL.sh, armR: aR.sh, elbowL: aL.el, elbowR: aR.el, torso, head, card },

@@ -54,8 +54,7 @@ export function App() {
     const s = new HallScene(host.current, layout, 'night');
     scene.current = s;
     s.onPickSeat = (seat) => { setChatTarget(seat); setTradeId(null); setTab('chat'); setSideOpen(true); };
-    s.onPickTicket = (id) => { setSelected(id); setTab('orders'); setSideOpen(true); };
-    s.onDblTicket = (id) => setDossier(id);
+    s.onPickTicket = (id) => { setSelected(id); setDossier(id); };
     (window as unknown as { __hall: HallScene }).__hall = s;
     return () => { s.dispose(); scene.current = null; };
   }, [layout]);
@@ -104,7 +103,7 @@ export function App() {
             <button className={'chipbtn' + (freefly ? ' on' : '')} onClick={toggleFly} title="Free-fly viewer (F)">⌖ 360° fly</button>
           </div>
           {freefly && <div className="hint"><b>Free-fly</b> · drag = look · W A S D = move · Q / E = down / up · Shift = fast · wheel = speed · Esc = exit</div>}
-          {!freefly && <div className="vtag"><i />click a person or judge · double-click a trader for the full dossier · keys 1–8 views</div>}
+          {!freefly && <div className="vtag"><i />click a trader for the full dossier · click a judge to chat · keys 1–8 views</div>}
         </div>
         <aside className={'side' + (sideOpen ? '' : ' closed')}>
           <div className="tabs">

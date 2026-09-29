@@ -853,8 +853,10 @@ class FloorEngine:
                 why = f"Only {len(ap)}/5 judges approved (needed 3 for a CEO hearing, 5 for direct entry), so the trade was sent to the exit gate."
             elif n < 5:
                 why = f"Still under review: {n}/5 cabins have ruled so far."
+            elif t.status == "exec" or t.stage in ("to_exec", "hearing_exec"):
+                why = f"The panel split {len(ap)}/5 - the trade is with CEO NAVEED in the executive chamber for the final ruling."
             else:
-                why = "Awaiting the verdict."
+                why = "All five judges have ruled; the verdict is being applied at the gate."
             R_risk = abs(t.entry - t.sl)
             outcome = None
             if t.paper != "pending" or t.r is not None:

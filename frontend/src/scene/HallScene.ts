@@ -163,7 +163,6 @@ export class HallScene {
     this.resize();
     const dom = this.renderer.domElement;
     dom.addEventListener('pointerdown', (e) => { this.downAt = { x: e.clientX, y: e.clientY }; });
-    dom.addEventListener('dblclick', (e) => this.pick(e, true));
     dom.addEventListener('pointerup', (e) => { if (Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) < 5) this.pick(e); });
     this.loop();
   }
@@ -189,7 +188,7 @@ export class HallScene {
     while (o) {
       const pk = this.rooms.pickables.find((p) => p.obj === o);
       if (pk) { if (!dbl) this.onPickSeat(pk.seat); return; }
-      for (const [id, a] of this.actors) if (a.p === o && id.startsWith('w_')) { this.selected = id; if (dbl) this.onDblTicket(id.slice(2)); else this.onPickTicket(id.slice(2)); return; }
+      for (const [id, a] of this.actors) if (a.p === o && id.startsWith('w_')) { this.selected = id; this.onPickTicket(id.slice(2)); return; }
       o = o.parent;
     }
   }
