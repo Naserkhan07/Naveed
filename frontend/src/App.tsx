@@ -5,6 +5,7 @@ import type { Frame, Layout, Theme } from './types';
 import { TopBar } from './ui/TopBar';
 import { BrainHUD } from './ui/BrainHUD';
 import { Orders } from './ui/Orders';
+import { Council } from './ui/Council';
 import { ALL, ChatDock } from './ui/ChatDock';
 import { Settings, SettingsT } from './ui/Settings';
 import { Footer } from './ui/Footer';
@@ -18,7 +19,8 @@ export function App() {
   const [preset, setPreset] = useState<string | null>('overview');
   const [freefly, setFreefly] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [panels, setPanels] = useState({ brain: true, orders: true, chat: true });
+  const [tab, setTab] = useState<'orders' | 'chat' | 'council' | 'brain'>('orders');
+  const [sideOpen, setSideOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [chatTarget, setChatTarget] = useState('ATLAS');
   const [tradeId, setTradeId] = useState<string | null>(null);
@@ -49,8 +51,8 @@ export function App() {
     if (!layout || !host.current) return;
     const s = new HallScene(host.current, layout, 'night');
     scene.current = s;
-    s.onPickSeat = (seat) => { setChatTarget(seat); setTradeId(null); setPanels((p) => ({ ...p, chat: true })); };
-    s.onPickTicket = (id) => { setSelected(id); setPanels((p) => ({ ...p, orders: true })); };
+    s.onPickSeat = (seat) => { setChatTarget(seat); setTradeId(null); setTab('chat'); setSideOpen(true); };
+    s.onPickTicket = (id) => { setSelected(id); setTab('orders'); setSideOpen(true); };
     (window as unknown as { __hall: HallScene }).__hall = s;
     return () => { s.dispose(); scene.current = null; };
   }, [layout]);
@@ -74,6 +76,7 @@ export function App() {
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       if (e.key === 'f' || e.key === 'F') toggleFly();
       else if (e.key === 'n' || e.key === 'N') toggleTheme();
+      else if (e.key === '\\') setSideOpen((v) => !v);
       else if (e.key === 'Escape' && scene.current?.rig.freefly) toggleFly();
       else if (!scene.current?.rig.freefly && /^[1-8]$/.test(e.key) && layout) goPreset(['overview', 'pit', 'corridor', 'cabins', 'executive', 'debate', 'gates', 'tape'][+e.key - 1]);
     };
@@ -82,36 +85,41 @@ export function App() {
   }, [layout, toggleFly, toggleTheme]);
 
   const fly = extra?.fly ?? null;
-  const thinkingName = thinking.seat;
+  const active = (extra?.orders ?? []).filter((o) => !o.verdict).length;
+  const PRESETS: [string, string][] = [['overview', 'Overview'], ['pit', 'Pit'], ['corridor', 'Corridor'], ['cabins', 'Cabins'], ['executive', 'Executive'], ['debate', 'Debate'], ['gates', 'Gates'], ['tape', 'Tape']];
 
   return (
     <div className={'app ' + theme}>
-      <div className="canvas" ref={host} />
-      {!layout && <div className="loading">{err ? `Cannot reach the floor engine: ${err}` : 'Loading the trading floor…'}</div>}
-      <TopBar preset={preset} freefly={freefly} theme={theme} speed={speed} connected={connected} panels={panels}
-        onPreset={goPreset} onFly={toggleFly} onTheme={toggleTheme} onSpeed={changeSpeed}
-        onPanel={(k) => setPanels((p) => ({ ...p, [k]: !p[k] }))} onSettings={() => setShowSettings(true)} />
-      {panels.brain && <div className="dock left"><BrainHUD fly={fly} color={thinking.color} seatName={thinkingName} /></div>}
-      {panels.orders && (
-        <div className="dock right">
-          <Orders orders={extra?.orders ?? []} layout={layout} selected={selected}
-            onSelect={(id) => setSelected(id)}
-            onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setPanels((p) => ({ ...p, chat: true })); }} />
+      <TopBar theme={theme} speed={speed} connected={connected} sideOpen={sideOpen} extra={extra} frame={frame}
+        onTheme={toggleTheme} onSpeed={changeSpeed} onSide={() => setSideOpen((v) => !v)} onSettings={() => setShowSettings(true)} />
+      <div className="stage">
+        <div className="viewport">
+          <div className="canvas" ref={host} />
+          {!layout && <div className="loading">{err ? `Cannot reach the floor engine: ${err}` : 'Loading the trading floor…'}</div>}
+          <div className="vbar">
+            {PRESETS.map(([k, n], i) => <button key={k} className={'chipbtn' + (!freefly && preset === k ? ' on' : '')} onClick={() => goPreset(k)} title={`View ${i + 1}`}>{n}</button>)}
+            <button className={'chipbtn' + (freefly ? ' on' : '')} onClick={toggleFly} title="Free-fly viewer (F)">⌖ 360° fly</button>
+          </div>
+          {freefly && <div className="hint"><b>Free-fly</b> · drag = look · W A S D = move · Q / E = down / up · Shift = fast · wheel = speed · Esc = exit</div>}
+          {!freefly && <div className="vtag"><i />click a judge or a person to inspect · keys 1–8 views</div>}
         </div>
-      )}
-      {panels.chat && (
-        <div className="dock bottom">
-          <ChatDock layout={layout} extra={extra} target={chatTarget} tradeId={tradeId}
-            onTarget={(t) => { setChatTarget(t); if (t === ALL) setTradeId(null); }} onClearTrade={() => setTradeId(null)} />
-        </div>
-      )}
-      {freefly && (
-        <div className="hint">
-          <b>360° free-fly</b> · drag = look · W A S D / arrows = move · Q / E = down / up · Shift = fast · Alt = slow · wheel = speed · Esc / F = exit
-        </div>
-      )}
-      <Footer extra={extra} frame={frame} />
-      {showSettings && <Settings onClose={() => setShowSettings(false)} onChanged={(s) => setSpeed(s.speed)} />}
+        <aside className={'side' + (sideOpen ? '' : ' closed')}>
+          <div className="tabs">
+            <button className={tab === 'orders' ? 'on' : ''} onClick={() => setTab('orders')}>Orders{active > 0 && <span className="badge">{active}</span>}</button>
+            <button className={tab === 'chat' ? 'on' : ''} onClick={() => setTab('chat')}>Desks</button>
+            <button className={tab === 'council' ? 'on' : ''} onClick={() => setTab('council')}>Council</button>
+            <button className={tab === 'brain' ? 'on' : ''} onClick={() => setTab('brain')}>Brain</button>
+          </div>
+          {tab === 'orders' && <Orders orders={extra?.orders ?? []} layout={layout} selected={selected} onSelect={(id) => setSelected(id)}
+            onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setTab('chat'); }} />}
+          {tab === 'chat' && <div className="pane"><ChatDock layout={layout} extra={extra} target={chatTarget} tradeId={tradeId}
+            onTarget={(t) => { setChatTarget(t); if (t === ALL) setTradeId(null); }} onClearTrade={() => setTradeId(null)} /></div>}
+          {tab === 'council' && <Council extra={extra} layout={layout} onChat={(seat) => { setChatTarget(seat); setTradeId(null); setTab('chat'); }} />}
+          {tab === 'brain' && <div className="pane"><BrainHUD fly={fly} color={thinking.color} seatName={thinking.seat} /></div>}
+        </aside>
+      </div>
+      <Footer extra={extra} />
+      {showSettings && <Settings layout={layout} onClose={() => setShowSettings(false)} onChanged={(s) => setSpeed(s.speed)} />}
     </div>
   );
 }

@@ -28,7 +28,7 @@ export function BrainHUD({ fly, color, seatName }: { fly: FlySnap | null; color:
   const maxMb = f ? Math.max(0.001, ...f.focus.mb.map(Math.abs)) : 1;
   const funnel = f?.funnel;
   return (
-    <div className="panel brain">
+    <div className="brainwrap">
       <div className="ph"><b>DROSOPHILA</b><span className="muted">fly-brain market hunter</span>
         {f && <Pill color={STATE_COL[f.state] ?? '#94a3b8'} solid>{f.state.replace(/_/g, ' ')}</Pill>}</div>
       <div className="conn" ref={host}>

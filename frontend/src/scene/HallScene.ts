@@ -6,10 +6,47 @@ import { ThemeReg } from './registry';
 import { Shared, buildOutdoor, buildShell, sharedMaterials } from './world';
 import { Rooms, buildRooms } from './rooms';
 import { Screens } from './screens';
-import { Person, makePerson, setAccent, setLabel, setSitting } from './people';
+import { Person, animatePerson, fitLabel, makePerson, setAccent, setCarry, setLabel, setSitting } from './people';
 import { canvas, canvasTexture, rng } from './textures';
 
-interface Actor { p: Person; tx: number; tz: number; th: number; x: number; z: number; h: number; sit: boolean; born: number; }
+interface Actor { p: Person; tx: number; tz: number; th: number; x: number; z: number; h: number; sit: boolean; born: number; npc: boolean; }
+
+/** speech bubble over a judge: verdict, confidence, one-line thesis. Click = open that desk's chat. */
+class Bubble {
+  sprite: THREE.Sprite; private c: HTMLCanvasElement; private g: CanvasRenderingContext2D; private tex: THREE.CanvasTexture; private key = '';
+  constructor(parent: THREE.Object3D, y: number) {
+    const [c, g] = canvas(512, 200); this.c = c; this.g = g;
+    this.tex = new THREE.CanvasTexture(c); this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.anisotropy = 4;
+    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex, transparent: true, depthWrite: false, depthTest: false }));
+    this.sprite.renderOrder = 30; this.sprite.position.y = y; this.sprite.visible = false; parent.add(this.sprite);
+  }
+  set(say: { ok: boolean; conf: number; text: string; sym: string } | undefined, color: string, camDist: number) {
+    if (!say || camDist > 70) { this.sprite.visible = false; return; }
+    const k = say.sym + say.text + say.ok;
+    if (k !== this.key) {
+      this.key = k;
+      const g = this.g, W = 512, H = 200;
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = 'rgba(9,14,24,0.94)'; g.strokeStyle = color; g.lineWidth = 5;
+      g.beginPath(); g.roundRect(4, 4, W - 8, H - 30, 18); g.fill(); g.stroke();
+      g.beginPath(); g.moveTo(W / 2 - 14, H - 27); g.lineTo(W / 2, H - 4); g.lineTo(W / 2 + 14, H - 27); g.closePath(); g.fillStyle = 'rgba(9,14,24,0.94)'; g.fill();
+      g.font = '800 34px Inter, system-ui, sans-serif'; g.textBaseline = 'alphabetic'; g.textAlign = 'left';
+      g.fillStyle = say.ok ? '#34d399' : '#f87171'; g.fillText(`${say.ok ? 'APPROVE' : 'REJECT'} ${say.conf}%`, 24, 50);
+      g.fillStyle = '#94a3b8'; g.font = '600 26px Inter, system-ui, sans-serif'; g.textAlign = 'right'; g.fillText(say.sym, W - 24, 50);
+      g.textAlign = 'left'; g.fillStyle = '#e2e8f0'; g.font = '500 25px Inter, system-ui, sans-serif';
+      const words = say.text.split(' '); let line = '', y = 88, n = 0;
+      for (const w of words) {
+        if (g.measureText(line + w).width > W - 48) { g.fillText(line, 24, y); y += 30; line = ''; if (++n >= 3) break; }
+        line += w + ' ';
+      }
+      if (n < 3) g.fillText(line, 24, y);
+      this.tex.needsUpdate = true;
+    }
+    const s = Math.min(2.6, Math.max(1, camDist / 26));
+    this.sprite.scale.set(3.6 * s, 1.41 * s, 1);
+    this.sprite.visible = true;
+  }
+}
 const hex = (s: string) => parseInt(s.replace('#', ''), 16);
 const angDiff = (a: number, b: number) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
 
@@ -33,11 +70,16 @@ export class HallScene {
   private ray = new THREE.Raycaster(); private downAt = { x: 0, y: 0 };
   private selectRing: THREE.Mesh; private selected: string | null = null;
   private frame: Frame | null = null;
+  private say: Record<string, { ok: boolean; conf: number; text: string; sym: string }> = {};
   private envRT: THREE.WebGLRenderTarget;
+  private dprMax = 1.5; private dpr = 1.5; private ftAvg = 16; private ftN = 0;
+  private bubbles: Record<string, Bubble> = {};
+  private camDistTo = new THREE.Vector3();
 
   constructor(private host: HTMLElement, private L: Layout, theme: Theme) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.dprMax = Math.min(devicePixelRatio, 1.5); this.dpr = this.dprMax;
+    this.renderer.setPixelRatio(this.dpr);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -93,6 +135,8 @@ export class HallScene {
     this.scene.add(this.outdoor.group);
     this.rooms = buildRooms(L, S, this.reg);
     this.scene.add(this.rooms.group);
+    for (const [seat, j] of Object.entries(this.rooms.judges)) { setLabel(j.person, seat, L.palette.seat_colors[seat] ?? '#94a3b8'); this.bubbles[seat] = new Bubble(j.person, 2.5); }
+    setLabel(this.rooms.ceo.person, 'NAVEED · CEO', L.palette.seat_colors.NAVEED ?? '#c084fc'); this.bubbles.NAVEED = new Bubble(this.rooms.ceo.person, 2.5);
     this.screens = new Screens(L, this.reg);
     this.scene.add(this.screens.group);
 
@@ -107,9 +151,9 @@ export class HallScene {
       this.domeMat.uniforms.top.value.set(n ? 0x050a16 : 0x2f6fc4);
       this.domeMat.uniforms.bot.value.set(n ? 0x1a2740 : 0xa9d3f2);
       this.stars.visible = n;
-      this.hemi.color.set(n ? 0x5b74a8 : 0xbfd8ff); this.hemi.groundColor.set(n ? 0x1a2233 : 0x9aa6b8);
+      this.hemi.intensity = n ? 0.85 : 1.0; this.hemi.color.set(n ? 0x6f88bd : 0xbfd8ff); this.hemi.groundColor.set(n ? 0x1a2233 : 0x9aa6b8);
       this.sun.castShadow = !n;
-      this.scene.environmentIntensity = n ? 0.16 : 0.6;
+      this.scene.environmentIntensity = n ? 0.3 : 0.6;
     });
     this.setTheme(theme);
 
@@ -165,15 +209,16 @@ export class HallScene {
         const p = makePerson(w.k === 'npc' ? 0x94a3b8 : hex(w.c), seed, w.k === 'npc' ? [0x243043, 0x2d3748, 0x3b4658, 0x1f2a3a][seed % 4] : 0x1e2735);
         p.position.set(w.x, 0, w.z); p.rotation.y = w.h;
         this.scene.add(p);
-        a = { p, tx: w.x, tz: w.z, th: w.h, x: w.x, z: w.z, h: w.h, sit: w.sit, born: this.t };
+        a = { p, tx: w.x, tz: w.z, th: w.h, x: w.x, z: w.z, h: w.h, sit: w.sit, born: this.t, npc: w.k === 'npc' };
         this.actors.set(w.id, a);
       }
       a.tx = w.x; a.tz = w.z; a.th = w.h; a.sit = w.sit;
       setSitting(a.p, w.sit);
-      if (w.k !== 'npc') {
+      setCarry(a.p, w.k !== 'npc');
+      if (w.k === 'npc') setLabel(a.p, w.l, w.c || '#94a3b8', true);
+      else {
         setAccent(a.p, w.c);
         setLabel(a.p, w.l, w.c);
-        if (a.p.userData.label) a.p.userData.label.position.y = w.sit ? 1.75 : 2.2;
         desks.forEach((d, i) => { if (Math.hypot(d.seat[0] - w.x, d.seat[1] - w.z) < 0.8 && w.sit) ringOn.add(i); });
       }
       a.p.visible = !w.gone;
@@ -194,6 +239,7 @@ export class HallScene {
     // debate
     const sp = f.debate.speaker;
     for (const [seat, p] of Object.entries(this.rooms.delegates)) p.userData.accentMat.emissiveIntensity = sp === seat ? 1.6 : 0.3;
+    this.say = {}; for (const [seat, j] of Object.entries(f.judges)) if (j.say) this.say[seat] = j.say;
     if (sp) this.screens.drawDebate(sp, f.debate.text, this.L.palette.seat_colors[sp] ?? '#c084fc');
     else this.screens.drawDebate('', '');
   }
@@ -205,16 +251,26 @@ export class HallScene {
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now; this.t += dt;
-    // smooth walkers between 12 Hz frames
+    // smooth walkers between 12 Hz frames; drive the walk cycle from the distance actually covered
     const k = 1 - Math.exp(-dt * 14), kr = 1 - Math.exp(-dt * 12);
+    const cp = this.camera.position;
     for (const a of this.actors.values()) {
-      const dx = a.tx - a.x, dz = a.tz - a.z;
+      const dx = a.tx - a.x, dz = a.tz - a.z, ox = a.x, oz = a.z;
       if (dx * dx + dz * dz > 9) { a.x = a.tx; a.z = a.tz; } else { a.x += dx * k; a.z += dz * k; }
       a.h += angDiff(a.h, a.th) * kr;
       a.p.position.set(a.x, 0, a.z); a.p.rotation.y = a.h;
-      // little walking bob
-      if (!a.sit) { const sp = Math.hypot(dx, dz); a.p.position.y = sp > 0.02 ? Math.abs(Math.sin(this.t * 9 + a.born)) * 0.03 : 0; }
+      const cd = Math.hypot(cp.x - a.x, cp.y - 1.5, cp.z - a.z);
+      if (cd < 70 || a.p.userData.sitK !== (a.sit ? 1 : 0)) animatePerson(a.p, this.t, dt, Math.hypot(a.x - ox, a.z - oz) / Math.max(dt, 1e-3));
+      fitLabel(a.p, cd, a.npc);
     }
+    for (const [seat, j] of Object.entries(this.rooms.judges)) {
+      const wp = j.person.getWorldPosition(this.camDistTo);
+      const cd = wp.distanceTo(cp);
+      fitLabel(j.person, cd, false);
+      this.bubbles[seat]?.set(this.say[seat], this.L.palette.seat_colors[seat] ?? '#38bdf8', cd);
+    }
+    { const wp = this.rooms.ceo.person.getWorldPosition(this.camDistTo); const cd = wp.distanceTo(cp);
+      fitLabel(this.rooms.ceo.person, cd, false); this.bubbles.NAVEED?.set(this.say.NAVEED, this.L.palette.seat_colors.NAVEED ?? '#c084fc', cd); }
     const sel = this.selected ? this.actors.get(this.selected) : null;
     this.selectRing.visible = !!sel;
     if (sel) { this.selectRing.position.set(sel.x, 0.05, sel.z); this.selectRing.scale.setScalar(1 + 0.08 * Math.sin(this.t * 5)); }
@@ -223,6 +279,12 @@ export class HallScene {
     this.screens.update(this.t, dt);
     this.rig.update(dt);
     this.renderer.render(this.scene, this.camera);
+    // adaptive resolution: hold ~50 fps on modest GPUs
+    this.ftAvg += (dt * 1000 - this.ftAvg) * 0.05;
+    if (++this.ftN % 45 === 0) {
+      if (this.ftAvg > 24 && this.dpr > 0.8) { this.dpr = Math.max(0.8, this.dpr - 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
+      else if (this.ftAvg < 13.5 && this.dpr < this.dprMax) { this.dpr = Math.min(this.dprMax, this.dpr + 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
+    }
   };
 
   dispose() {

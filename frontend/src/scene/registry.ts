@@ -9,7 +9,12 @@ export class ThemeReg {
   private li: { l: THREE.Light; day: number; night: number }[] = [];
   private fn: ((t: Theme) => void)[] = [];
   emissive(m: EmMat, day: number, night: number) { this.em.push({ m, day, night }); m.emissiveIntensity = night; return m; }
-  light<T extends THREE.Light>(l: T, day: number, night: number): T { this.li.push({ l, day, night }); l.intensity = night; return l; }
+  /** point lights are expensive (every fragment loops over them): only those flagged `keep` stay on, the rest are emissive-only */
+  light<T extends THREE.Light>(l: T, day: number, night: number, keep = false): T {
+    this.li.push({ l, day, night }); l.intensity = night;
+    if ((l as unknown as THREE.PointLight).isPointLight && !keep) l.visible = false;
+    return l;
+  }
   on(f: (t: Theme) => void) { this.fn.push(f); }
   apply(t: Theme) {
     const n = t === 'night';

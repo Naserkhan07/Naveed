@@ -292,8 +292,10 @@ async def ws(sock: WebSocket):
             msg = e.frame()
             if n % 12 == 0:
                 msg["extra"] = {"fly": e.fly(), "orders": e.orders(24), "tape": e.tape.summary(), "mode": e.tape.live_mode,
-                                "events": list(e.events)[-14:], "lessons": list(e.lessons)[-6:], "stats": e.stats,
-                                "chatroom": list(e.chatroom)[-12:], "seats": e.seats()}
+                                "events": list(e.events)[-14:], "lessons": list(e.lessons)[-8:], "stats": e.kpis(),
+                                "chatroom": list(e.chatroom)[-40:], "seats": e.seats(), "llm": e.router.status(),
+                                "mt5": {"connected": e.mt5.status()["bridge"]["connected"], "auto": e.settings.mt5_auto},
+                                "record": e.judges.record}
             await sock.send_text(json.dumps(msg))
             n += 1
             await asyncio.sleep(1 / 12)

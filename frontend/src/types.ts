@@ -54,18 +54,19 @@ export interface Layout {
 export interface WalkerPose { id: string; x: number; z: number; h: number; sit: boolean; l: string; c: string; k: string; st: string; gone: boolean }
 export interface Frame {
   t: number; sim: number; speed: number; walkers: WalkerPose[];
-  judges: Record<string, { state: string; ticket: string | null }>;
+  judges: Record<string, { state: string; ticket: string | null; say?: { ok: boolean; conf: number; text: string; sym: string; tid: string } }>;
   thinking: { seat: string; color: string };
   debate: { speaker: string | null; text: string };
   brain_state: string;
   extra?: Extra;
 }
 export interface TapeRow { s: string; c: string; p: number; ch: number; r: string }
-export interface VoteCard { seat: string; cabin: number; vote: 'approve' | 'reject'; score: number; reason: string; label: string }
+export interface VoteCard { seat: string; cabin: number; vote: 'approve' | 'reject'; score: number; reason: string; label: string; confidence?: number; thesis?: string; risk?: string }
+export interface Mt5Info { status: string; symbol: string; side: string; lots: number; retcode: number | null; msg: string; mt5_ticket: number | null; price: number | null }
 export interface OrderCard {
   id: string; sym: string; cls: string; dir: 'LONG' | 'SHORT'; emitter: string; conviction: number; entry: number; sl: number; tp: number;
   rr: number; desk: number; status: string; stage: string; cabin: number; approvals: number; votes: VoteCard[];
-  ceo: { vote: string; reason: string; label: string } | null; verdict: string; path: string; paper: string; r: number | null; t0: number;
+  ceo: { vote: string; reason: string; label: string; confidence?: number; thesis?: string; risk?: string } | null; mt5?: Mt5Info | null; verdict: string; path: string; paper: string; r: number | null; t0: number;
   info: Record<string, unknown>; regime: string; dopamine: number | null; features: Record<string, number>;
 }
 export interface FlySnap {
@@ -87,6 +88,10 @@ export interface Extra {
   lessons: { t: number; seat: string; kind: string; text: string }[];
   stats: Record<string, number>;
   chatroom: { t: number; name: string; text: string; color: string; label?: string }[];
-  seats: { id: string; cabin: number; persona: string; lens: string; color: string; state: string; ticket: string | null; label: string; messages: number }[];
+  seats: SeatInfo[];
+  llm?: { enabled: boolean; label: string; stats: Record<string, number>; seat_endpoints: Record<string, string> };
+  mt5?: { connected: boolean; auto: boolean };
+  record?: string;
 }
+export interface SeatInfo { id: string; cabin: number; persona: string; role: string; bio: string; lens: string; color: string; state: string; ticket: string | null; label: string; messages: number; model: string; bias: number; notes: string[] }
 export interface ChatMsg { role: 'user' | 'assistant'; content: string; label?: string; ms?: number; seat?: string; color?: string }

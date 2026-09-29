@@ -61,8 +61,8 @@ export function ChatDock({ layout, extra, target, tradeId, onTarget, onClearTrad
 
   const seatInfo = (id: string) => extra?.seats.find((s) => s.id === id);
   return (
-    <div className="panel chat">
-      <div className="tabs">
+    <div className="chat">
+      <div className="ctabs">
         {SEAT_ORDER.map((s) => {
           const info = seatInfo(s); const busyNow = info && info.state !== 'idle';
           return <button key={s} className={target === s ? 'on' : ''} style={{ '--c': seatColor(layout, s) } as React.CSSProperties} onClick={() => onTarget(s)} title={SEAT_ROLE[s]}>
@@ -71,7 +71,7 @@ export function ChatDock({ layout, extra, target, tradeId, onTarget, onClearTrad
         <button className={target === ALL ? 'on' : ''} style={{ '--c': '#38bdf8' } as React.CSSProperties} onClick={() => onTarget(ALL)} title="ask every desk at once">ALL</button>
         <button className={target === ROOM ? 'on' : ''} style={{ '--c': '#e2e8f0' } as React.CSSProperties} onClick={() => onTarget(ROOM)} title="open chatroom">ROOM</button>
       </div>
-      <div className="ph sm">
+      <div className="ph">
         <b style={{ color }}>{target === ALL ? 'All desks' : target === ROOM ? 'Chatroom' : target}</b>
         <span className="muted">{target === ALL ? 'debate table — every judge answers' : target === ROOM ? 'shared room' : SEAT_ROLE[target]}</span>
         {tradeId && !target.startsWith('@') && <button className="chip" onClick={onClearTrade} title="leave trade context">trade {tradeId} ✕</button>}

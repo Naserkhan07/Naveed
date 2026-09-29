@@ -3,7 +3,7 @@ import type { Layout } from '../types';
 import { ThemeReg, box, cyl, std } from './registry';
 import { Shared } from './world';
 import { canvas, canvasTexture, chartTexture, labelTexture } from './textures';
-import { Person, makePerson, setSitting } from './people';
+import { Person, makePerson, snapSit } from './people';
 
 export interface Rooms {
   group: THREE.Group;
@@ -42,7 +42,7 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
     g.add(box(0.6, 0.7, 0.08, chairM, c.chair[0], 0.95, c.chair[1] - 0.3));
     // judge
     const p = makePerson(col, c.id + 1);
-    p.position.set(c.chair[0], 0.1, c.chair[1] + 0.1); p.rotation.y = 0; setSitting(p, true);
+    p.position.set(c.chair[0], 0.04, c.chair[1] + 0.1); p.rotation.y = 0; snapSit(p, true);
     g.add(p);
     pickables.push({ obj: p, seat: c.seat });
     // colour strip along the back wall + glass plate
@@ -60,7 +60,7 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
     const ringM = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.8, roughness: 0.4, transparent: true, opacity: 0.85 });
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.72, 40), ringM);
     ring.rotation.x = -Math.PI / 2; ring.position.set(c.hear[0], 0.03, c.hear[1]); g.add(ring);
-    const light = reg.light(new THREE.PointLight(col, 1, 13, 1.8), 0, 12);
+    const light = reg.light(new THREE.PointLight(col, 1, 13, 1.8), 0, 12, false);
     light.position.set(c.x, 4.6, (c.z0 + c.z1) / 2); g.add(light);
     judges[c.seat] = { person: p, strip: stripM, ring, light };
   }
@@ -118,7 +118,7 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
   g.add(box(0.6, 1.3, 0.6, std(0x2a1f3a), 41.0, 0.9, dz));
   g.add(box(0.7, 3.2, 10.5, walnut, 41.6, 1.6, -5.8, true));
   const ceoCol = hex(seatC.NAVEED);
-  const ceo = makePerson(ceoCol, 3, 0x2b2140); ceo.position.set(40.5, 0.1, dz); ceo.rotation.y = -Math.PI / 2; setSitting(ceo, true); g.add(ceo);
+  const ceo = makePerson(ceoCol, 3, 0x2b2140); ceo.position.set(40.5, 0.04, dz); ceo.rotation.y = -Math.PI / 2; snapSit(ceo, true); g.add(ceo);
   pickables.push({ obj: ceo, seat: 'NAVEED' });
   g.add(cyl(0.34, 0.34, 0.08, chairM, 40.5, 0.55, dz)); g.add(box(0.08, 0.8, 0.7, chairM, 40.9, 0.95, dz));
   const plq = labelTexture('NAVEED · CEO', { fg: '#f3e8ff', bg: '#241a36', border: seatC.NAVEED, w: 512, h: 112, font: '800 58px Inter, system-ui, sans-serif' });
@@ -127,7 +127,7 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
   const cRingM = new THREE.MeshStandardMaterial({ color: ceoCol, emissive: ceoCol, emissiveIntensity: 0.9, transparent: true, opacity: 0.85 });
   const cRing = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.72, 40), cRingM); cRing.rotation.x = -Math.PI / 2; cRing.position.set(30.4, 0.04, dz); g.add(cRing);
   const rug = new THREE.Mesh(new THREE.CircleGeometry(2.4, 48), std(0x3b2a58, 0.95)); rug.rotation.x = -Math.PI / 2; rug.position.set(30.4, 0.03, dz); g.add(rug);
-  const ceoLight = reg.light(new THREE.PointLight(ceoCol, 1, 18, 1.8), 0, 16); ceoLight.position.set(32, 5.2, dz); g.add(ceoLight);
+  const ceoLight = reg.light(new THREE.PointLight(ceoCol, 1, 18, 1.8), 0, 16, true); ceoLight.position.set(32, 5.2, dz); g.add(ceoLight);
 
   // vault
   const [vx0, vz0, vx1, vz1] = L.vault.box;
@@ -150,7 +150,7 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
   const vlab = labelTexture('VAULT · PLAYBOOK', { fg: '#e2e8f0', bg: '#0f172a', border: '#94a3b8', w: 512, h: 96, font: '800 50px Inter, system-ui, sans-serif' });
   const vlm = new THREE.MeshStandardMaterial({ map: vlab, emissiveMap: vlab, emissive: 0xffffff }); reg.emissive(vlm, 0.5, 1.1);
   const vpl = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.68), vlm); vpl.position.set(vx1 - 0.2, 4.5, L.vault.door_z); vpl.rotation.y = -Math.PI / 2; g.add(vpl);
-  const vl = reg.light(new THREE.PointLight(0x9ecbff, 1, 16, 1.8), 0, 8); vl.position.set(31, 4.8, 6.6); g.add(vl);
+  const vl = reg.light(new THREE.PointLight(0x9ecbff, 1, 16, 1.8), 0, 8, true); vl.position.set(31, 4.8, 6.6); g.add(vl);
 
   // debate chamber
   const [bx0, bz0, bx1, bz1] = L.debate.box;
@@ -164,11 +164,11 @@ export function buildRooms(L: Layout, S: Shared, reg: ThemeReg): Rooms {
   L.debate.seats.forEach((s, i) => {
     const seat = order[i];
     const p = makePerson(hex(seatC[seat]), i + 2);
-    p.position.set(s[0], 0.1, s[1]); p.rotation.y = Math.atan2(cx - s[0], cz - s[1]); setSitting(p, true); g.add(p);
+    p.position.set(s[0], 0.04, s[1]); p.rotation.y = Math.atan2(cx - s[0], cz - s[1]); snapSit(p, true); g.add(p);
     g.add(cyl(0.3, 0.3, 0.07, chairM, s[0], 0.5, s[1], 16));
     delegates[seat] = p; pickables.push({ obj: p, seat });
   });
-  const dl = reg.light(new THREE.PointLight(0xc084fc, 1, 18, 1.8), 0, 14); dl.position.set(cx, 5, cz); g.add(dl);
+  const dl = reg.light(new THREE.PointLight(0xc084fc, 1, 18, 1.8), 0, 14, true); dl.position.set(cx, 5, cz); g.add(dl);
 
   // ---------------------------------------------------------------- arrival hall
   const [sx, sz] = L.decor.security_desk;

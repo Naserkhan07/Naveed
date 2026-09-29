@@ -135,6 +135,7 @@ class FloorEngine:
                       "wins": 0, "losses": 0, "timeouts": 0, "unfilled": 0, "sumR": 0.0,
                       "entered_R": 0.0, "entered_n": 0, "rejected_R": 0.0, "rejected_n": 0, "unanimous_R": 0.0, "unanimous_n": 0}
         self.pending_reviews: dict[str, tuple] = {}
+        self.say: dict[str, dict] = {}
         self.judge_state: dict[str, dict] = {s: {"state": "idle", "ticket": None} for s in JUDGES + ["NAVEED"]}
         self.thinking = {"seat": "DROSOPHILA", "until": 0.0}
         self.debate = {"speaker": None, "text": "", "until": -1.0, "kind": ""}
@@ -492,6 +493,7 @@ class FloorEngine:
             if vote is not None and w.timer <= 0:
                 self.pending_reviews.pop(w.id, None)
                 t.votes.append(vote)
+                self._say(seat, vote.approve, vote.confidence, vote.thesis or vote.reason, t)
                 w.color = COLORS[seat]
                 self.judge_state[seat] = {"state": "idle", "ticket": None}
                 self.log("vote", f"{seat} {'APPROVES' if vote.approve else 'REJECTS'} {t.id} {t.sym}: {vote.reason[:90]}", t.id)
@@ -514,6 +516,7 @@ class FloorEngine:
             if out is not None and w.timer <= 0:
                 self.pending_reviews.pop(w.id, None)
                 t.ceo = out
+                self._say("NAVEED", out["vote"] == "approve", out.get("confidence", 0), out.get("thesis") or out["reason"], t)
                 self.stats["ceo_rulings"] += 1
                 ok = out["vote"] == "approve"
                 self.judge_state["NAVEED"] = {"state": "idle", "ticket": None}
@@ -783,6 +786,9 @@ class FloorEngine:
         del self.chats[seat][:-60]
         return {"seat": seat, "answer": rep.text, "label": rep.label, "ms": rep.ms, "color": COLORS[seat]}
 
+    def _say(self, seat: str, ok: bool, conf: int, text: str, t: Ticket):
+        self.say[seat] = {"ok": ok, "conf": int(conf), "text": text[:120], "sym": t.sym, "tid": t.id, "until": self.sim_t + 12.0}
+
     def send_mt5(self, t: Ticket, why: str = "manual") -> dict:
         live_ok = t.idx in self.tape.live_idx and self.settings.speed <= 1.5
         o = self.mt5.enqueue(t, self.settings.mt5_lots, live_ok, self.settings.mt5_allow_synth, why)
@@ -801,7 +807,8 @@ class FloorEngine:
             thinking = self.thinking["seat"] if self.clock < self.thinking["until"] else "DROSOPHILA"
             ws = [w.pose() for w in self.walkers.values()]
             return {"t": round(self.clock, 2), "sim": round(self.sim_t, 1), "speed": self.settings.speed, "walkers": ws,
-                    "judges": self.judge_state, "thinking": {"seat": thinking, "color": COLORS[thinking]},
+                    "judges": {k: ({**v, "say": self.say[k]} if k in self.say and self.sim_t < self.say[k]["until"] else v) for k, v in self.judge_state.items()},
+                    "thinking": {"seat": thinking, "color": COLORS[thinking]},
                     "debate": {"speaker": self.debate["speaker"] if self.sim_t < self.debate["until"] else None,
                                "text": self.debate["text"] if self.sim_t < self.debate["until"] else ""},
                     "brain_state": self.hunter.state}
@@ -816,6 +823,11 @@ class FloorEngine:
         return {"entered": {"n": S["entered_n"], "avgR": avg("entered_R", "entered_n")},
                 "rejected": {"n": S["rejected_n"], "avgR": avg("rejected_R", "rejected_n")},
                 "unanimous": {"n": S["unanimous_n"], "avgR": avg("unanimous_R", "unanimous_n")}}
+
+    def kpis(self) -> dict:
+        S = self.stats
+        n = S["wins"] + S["losses"]
+        return {**S, "winrate": round(S["wins"] / n, 3) if n else None, "in_pipe": len([t for t in self.tickets.values() if t.open_risk()])}
 
     def state(self) -> dict:
         with self.lock:

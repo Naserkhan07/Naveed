@@ -1,38 +1,39 @@
-import type { Theme } from '../types';
-
-const PRESETS: [string, string][] = [['overview', 'Overview'], ['pit', 'Pit'], ['corridor', 'Corridor'], ['cabins', 'Cabins'], ['executive', 'Exec'], ['debate', 'Debate'], ['gates', 'Gates'], ['tape', 'Tape']];
+import type { Extra, Frame, Theme } from '../types';
 
 interface Props {
-  preset: string | null; freefly: boolean; theme: Theme; speed: number; connected: boolean;
-  panels: { brain: boolean; orders: boolean; chat: boolean };
-  onPreset: (p: string) => void; onFly: () => void; onTheme: () => void; onSpeed: (s: number) => void;
-  onPanel: (k: 'brain' | 'orders' | 'chat') => void; onSettings: () => void;
+  theme: Theme; speed: number; connected: boolean; sideOpen: boolean; extra: Extra | null; frame: Frame | null;
+  onTheme: () => void; onSpeed: (s: number) => void; onSide: () => void; onSettings: () => void;
 }
+const fmtT = (s: number) => `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 export function TopBar(p: Props) {
+  const st = p.extra?.stats ?? {};
+  const live = !!p.extra?.mode?.startsWith('LIVE');
+  const wr = st.winrate as number | null | undefined;
+  const R = (st.sumR ?? 0) as number;
+  const K = ({ l, v, c }: { l: string; v: React.ReactNode; c?: string }) => <div className="kpi"><span>{l}</span><b className={c}>{v}</b></div>;
   return (
     <header className="topbar">
-      <div className="brand"><span className="logo">◈</span><b>SOUL EXTER</b><span className="sub">autonomous trading floor</span></div>
-      <nav className="presets">
-        {PRESETS.map(([k, n]) => (
-          <button key={k} className={!p.freefly && p.preset === k ? 'on' : ''} onClick={() => p.onPreset(k)}>{n}</button>
-        ))}
-        <button className={'fly' + (p.freefly ? ' on' : '')} onClick={p.onFly} title="Free-fly viewer (F)">⌖ 360°</button>
-      </nav>
-      <div className="right">
-        <label className="speed" title="simulation speed">
-          <span>speed</span>
-          <select value={String(p.speed)} onChange={(e) => p.onSpeed(parseFloat(e.target.value))}>
+      <div className="brand"><div className="logo">S</div><b>SOUL EXTER</b><span className="sub">autonomous trading floor</span></div>
+      <div className="kpis">
+        <K l="Data" v={live ? 'LIVE' : 'SYNTH'} c={live ? 'live' : 'syn'} />
+        <K l="Sim time" v={p.frame ? fmtT(p.frame.sim) : '—'} />
+        <K l="In pipe" v={`${st.in_pipe ?? 0}/9`} />
+        <K l="Entry / Exit" v={`${st.entry ?? 0} / ${st.exit ?? 0}`} />
+        <K l="Paper W/L" v={`${st.wins ?? 0}/${st.losses ?? 0}`} />
+        <K l="Win rate" v={wr != null ? `${(wr * 100).toFixed(0)}%` : '—'} />
+        <K l="Σ R" v={`${R >= 0 ? '+' : ''}${R.toFixed(1)}`} c={R >= 0 ? 'up' : 'dn'} />
+        <K l="MT5" v={p.extra?.mt5?.connected ? (p.extra.mt5.auto ? 'AUTO' : 'READY') : 'OFF'} c={p.extra?.mt5?.connected ? 'live' : ''} />
+      </div>
+      <div className="tb-right">
+        <label className="muted small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>Speed
+          <select className="sel" value={String(p.speed)} onChange={(e) => p.onSpeed(parseFloat(e.target.value))}>
             {[0.25, 0.5, 1, 2, 4, 8, 16, 32].map((s) => <option key={s} value={s}>{s}×</option>)}
           </select>
         </label>
-        <button className="toggle" onClick={p.onTheme} title="Day / Night (N)">{p.theme === 'night' ? '☾ NIGHT' : '☀ DAY'}</button>
-        <div className="seg">
-          <button className={p.panels.brain ? 'on' : ''} onClick={() => p.onPanel('brain')}>Brain</button>
-          <button className={p.panels.orders ? 'on' : ''} onClick={() => p.onPanel('orders')}>Orders</button>
-          <button className={p.panels.chat ? 'on' : ''} onClick={() => p.onPanel('chat')}>Desks</button>
-        </div>
-        <button onClick={p.onSettings} title="Settings">⚙</button>
+        <button className="btn" onClick={p.onTheme} title="Day / Night (N)" style={{ minWidth: 88, fontWeight: 700, letterSpacing: '.05em' }}>{p.theme === 'night' ? '☾ NIGHT' : '☀ DAY'}</button>
+        <button className={'btn' + (p.sideOpen ? ' on' : '')} onClick={p.onSide} title="Toggle panel ( \ )">☰ Panel</button>
+        <button className="btn ic" onClick={p.onSettings} title="Settings">⚙</button>
         <span className={'dot ' + (p.connected ? 'ok' : 'bad')} title={p.connected ? 'stream connected' : 'reconnecting…'} />
       </div>
     </header>
