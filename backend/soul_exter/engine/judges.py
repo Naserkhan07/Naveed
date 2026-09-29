@@ -151,10 +151,12 @@ def enrich(seat: str, t: Ticket, approve: bool, score: float, why: str) -> tuple
     conf = int(np.clip(50 + abs(score) * 90 + (6 if approve else 0), 8, 96))
     D = "long" if t.direction > 0 else "short"
     tgt = f"target {t.tp:.5g} is {t.rr:.2f}R against a {t.sl:.5g} stop"
+    m = why.rstrip(". ").rsplit(":", 1)[0] if ":" in why else why.rstrip(". ")
+    m = m[0].lower() + m[1:] if m else m
     if approve:
-        thesis = f"{D} {t.sym} has an edge here: {why.split(':')[0].lower()}; {tgt}."
+        thesis = f"{D} {t.sym} has an edge here: {m}; {tgt}."
     else:
-        thesis = f"{D} {t.sym} lacks a clear edge: {why.split(':')[0].lower()}; {tgt} does not pay for the uncertainty."
+        thesis = f"{D} {t.sym} lacks a clear edge: {m}; {tgt} does not pay for the uncertainty."
     weak = {"ATLAS": f"trend alignment only {x['trend']:+.2f}", "QUANTA": f"efficiency {x['eff']:.2f} may not persist",
             "MERIDIAN": f"peer correlation {x['corr']:.2f} could decouple", "VOLTA": f"vol burst {x['vburst']:.2f} / liquidity {x['liq']:.2f}",
             "VECTOR": f"cost load {x['cost']:.2f}/1.6 and correlated exposure"}.get(seat, "regime change")

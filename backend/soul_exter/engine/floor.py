@@ -136,6 +136,7 @@ class FloorEngine:
                       "entered_R": 0.0, "entered_n": 0, "rejected_R": 0.0, "rejected_n": 0, "unanimous_R": 0.0, "unanimous_n": 0}
         self.pending_reviews: dict[str, tuple] = {}
         self.say: dict[str, dict] = {}
+        self.ticket_log: dict[str, list] = {}
         self.judge_state: dict[str, dict] = {s: {"state": "idle", "ticket": None} for s in JUDGES + ["NAVEED"]}
         self.thinking = {"seat": "DROSOPHILA", "until": 0.0}
         self.debate = {"speaker": None, "text": "", "until": -1.0, "kind": ""}
@@ -158,7 +159,12 @@ class FloorEngine:
 
     # ---------------------------------------------------------------- helpers
     def log(self, kind: str, text: str, tid: str | None = None):
-        self.events.append({"t": round(self.sim_t, 1), "kind": kind, "text": text, "ticket": tid})
+        ev = {"t": round(self.sim_t, 1), "kind": kind, "text": text, "ticket": tid}
+        self.events.append(ev)
+        if tid:
+            lg = self.ticket_log.setdefault(tid, [])
+            if len(lg) < 80:
+                lg.append(ev)
 
     def set_settings(self, d: dict):
         with self.lock:
@@ -823,6 +829,58 @@ class FloorEngine:
         return {"entered": {"n": S["entered_n"], "avgR": avg("entered_R", "entered_n")},
                 "rejected": {"n": S["rejected_n"], "avgR": avg("rejected_R", "rejected_n")},
                 "unanimous": {"n": S["unanimous_n"], "avgR": avg("unanimous_R", "unanimous_n")}}
+
+    def trade_detail(self, tid: str) -> dict | None:
+        """everything known about one trade: who found it and why, every judge's ruling, the verdict logic, the outcome"""
+        from ..brain.fly import MBON_NAMES
+        from ..brain.senses import SENSE_NAMES
+        from .judges import ticket_facts
+        with self.lock:
+            t = self.tickets.get(tid)
+            if t is None:
+                return None
+            card = t.card()
+            ap = [v for v in t.votes if v.approve]
+            rj = [v for v in t.votes if not v.approve]
+            n = len(t.votes)
+            if t.verdict_path == "unanimous":
+                why = f"All five judges approved ({len(ap)}/5), so the trade went straight to the entry gate."
+            elif t.verdict_path.startswith("split") and t.ceo:
+                ok = t.ceo["vote"] == "approve"
+                why = (f"The panel split {len(ap)}/5 (approve: {', '.join(v.seat for v in ap) or 'none'}; reject: {', '.join(v.seat for v in rj) or 'none'}). "
+                       f"CEO NAVEED {'APPROVED' if ok else 'REJECTED'} it at {t.ceo.get('confidence', '?')}% - {t.ceo.get('thesis') or t.ceo['reason']}")
+            elif t.verdict == "EXIT":
+                why = f"Only {len(ap)}/5 judges approved (needed 3 for a CEO hearing, 5 for direct entry), so the trade was sent to the exit gate."
+            elif n < 5:
+                why = f"Still under review: {n}/5 cabins have ruled so far."
+            else:
+                why = "Awaiting the verdict."
+            R_risk = abs(t.entry - t.sl)
+            outcome = None
+            if t.paper != "pending" or t.r is not None:
+                how = {"tp": "target hit before stop", "sl": "stop hit before target", "timeout": "closed at market after the 600 s window",
+                       "unfilled": "entry price was never touched in the fill window", "filled": "filled, still open"}.get(t.paper, t.paper)
+                outcome = {"paper": t.paper, "how": how, "r": None if t.r is None else round(t.r, 3), "t_fill": t.t_fill, "t_resolved": t.resolved_t,
+                           "verdict_was": ("correct" if (t.r is not None and ((t.verdict == "ENTRY") == (t.r > 0))) else "wrong" if t.r is not None and t.verdict else None),
+                           "note": "Paper outcome is simulated on the tape, independent of the verdict, net of spread."}
+            senses = sorted(({"name": SENSE_NAMES[i], "v": round(float(x), 3)} for i, x in enumerate(t.senses[:len(SENSE_NAMES)])), key=lambda d: -abs(d["v"]))[:8]
+            mb = [{"name": MBON_NAMES[i], "v": round(float(x), 3)} for i, x in enumerate(t.mb[:len(MBON_NAMES)])]
+            return {
+                "card": card,
+                "verdict_why": why,
+                "approved_by": [{"seat": v.seat, "confidence": v.confidence} for v in ap],
+                "rejected_by": [{"seat": v.seat, "confidence": v.confidence} for v in rj],
+                "levels": {"entry": t.entry, "sl": t.sl, "tp": t.tp, "risk_abs": round(R_risk, 6), "risk_pct": round(100 * R_risk / t.entry, 3) if t.entry else None,
+                           "reward_abs": round(abs(t.tp - t.entry), 6), "atr": t.atr, "rr": round(t.rr, 2)},
+                "found": {"emitter": t.emitter, "conviction": round(t.conviction, 3), "regime": t.regime, "info": t.info, "top_senses": senses, "mbon": mb,
+                          "sim_time": t.t0},
+                "facts": ticket_facts(t),
+                "timeline": [{"stage": a, "t": b} for a, b in t.trace],
+                "events": self.ticket_log.get(tid, []),
+                "outcome": outcome,
+                "mt5": self.mt5.orders.get(tid) and self.mt5.public(self.mt5.orders[tid]),
+                "walker": {"desk": t.desk + 1, "status": t.status, "stage": t.stage},
+            }
 
     def kpis(self) -> dict:
         S = self.stats

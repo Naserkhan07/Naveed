@@ -6,7 +6,7 @@ import { Pill, fmtPx, seatColor } from './common';
 const VERDICT_COL: Record<string, string> = { ENTRY: '#2fc68a', EXIT: '#f0616d' };
 type F = 'all' | 'active' | 'entry' | 'exit';
 
-export function Orders({ orders, layout, selected, onSelect, onAsk }: { orders: OrderCard[]; layout: Layout | null; selected: string | null; onSelect: (id: string) => void; onAsk: (id: string, seat: string) => void }) {
+export function Orders({ orders, layout, selected, onSelect, onAsk, onDossier }: { orders: OrderCard[]; layout: Layout | null; selected: string | null; onSelect: (id: string) => void; onAsk: (id: string, seat: string) => void; onDossier: (id: string) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const [f, setF] = useState<F>('all');
   const [busy, setBusy] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export function Orders({ orders, layout, selected, onSelect, onAsk }: { orders: 
           const stageCab = o.stage.startsWith('hearing_') ? (o.stage === 'hearing_exec' ? 6 : +o.stage.split('_')[1]) : 0;
           return (
             <div key={o.id} className={'card' + (selected === o.id ? ' sel' : '')} style={{ '--c': vcol } as React.CSSProperties}
-              onClick={() => { onSelect(o.id); setOpen(isOpen ? null : o.id); }}>
+              onClick={() => { onSelect(o.id); setOpen(isOpen ? null : o.id); }} onDoubleClick={() => onDossier(o.id)}>
               <div className="ct">
                 <span className="sym">{o.sym.replace('_', ' ')}</span><span className={'dirb ' + o.dir}>{o.dir}</span>
                 <span className="muted small">{o.cls}</span>
@@ -50,6 +50,7 @@ export function Orders({ orders, layout, selected, onSelect, onAsk }: { orders: 
                 {o.r != null ? <b className={'mono ' + (o.r >= 0 ? 'up' : 'dn')}>{o.r >= 0 ? '+' : ''}{o.r.toFixed(2)}R</b> : null}
                 <span className="muted small">paper {o.paper}{o.path ? ` · ${o.path}` : ''}</span>
                 <span className="grow" />
+                <button className="linkbtn" onClick={(e) => { e.stopPropagation(); onDossier(o.id); }}>Full details ▸</button>
                 {o.mt5?.status && <Pill color={o.mt5.status === 'filled' ? '#2fc68a' : o.mt5.status === 'error' ? '#f0616d' : '#f5b73b'}>MT5 {o.mt5.status}</Pill>}
               </div>
               {isOpen && (

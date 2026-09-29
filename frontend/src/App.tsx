@@ -6,6 +6,7 @@ import { TopBar } from './ui/TopBar';
 import { BrainHUD } from './ui/BrainHUD';
 import { Orders } from './ui/Orders';
 import { Council } from './ui/Council';
+import { Dossier } from './ui/Dossier';
 import { ALL, ChatDock } from './ui/ChatDock';
 import { Settings, SettingsT } from './ui/Settings';
 import { Footer } from './ui/Footer';
@@ -21,6 +22,7 @@ export function App() {
   const [speed, setSpeed] = useState(1);
   const [tab, setTab] = useState<'orders' | 'chat' | 'council' | 'brain'>('orders');
   const [sideOpen, setSideOpen] = useState(true);
+  const [dossier, setDossier] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [chatTarget, setChatTarget] = useState('ATLAS');
   const [tradeId, setTradeId] = useState<string | null>(null);
@@ -53,6 +55,7 @@ export function App() {
     scene.current = s;
     s.onPickSeat = (seat) => { setChatTarget(seat); setTradeId(null); setTab('chat'); setSideOpen(true); };
     s.onPickTicket = (id) => { setSelected(id); setTab('orders'); setSideOpen(true); };
+    s.onDblTicket = (id) => setDossier(id);
     (window as unknown as { __hall: HallScene }).__hall = s;
     return () => { s.dispose(); scene.current = null; };
   }, [layout]);
@@ -101,7 +104,7 @@ export function App() {
             <button className={'chipbtn' + (freefly ? ' on' : '')} onClick={toggleFly} title="Free-fly viewer (F)">⌖ 360° fly</button>
           </div>
           {freefly && <div className="hint"><b>Free-fly</b> · drag = look · W A S D = move · Q / E = down / up · Shift = fast · wheel = speed · Esc = exit</div>}
-          {!freefly && <div className="vtag"><i />click a judge or a person to inspect · keys 1–8 views</div>}
+          {!freefly && <div className="vtag"><i />click a person or judge · double-click a trader for the full dossier · keys 1–8 views</div>}
         </div>
         <aside className={'side' + (sideOpen ? '' : ' closed')}>
           <div className="tabs">
@@ -110,7 +113,7 @@ export function App() {
             <button className={tab === 'council' ? 'on' : ''} onClick={() => setTab('council')}>Council</button>
             <button className={tab === 'brain' ? 'on' : ''} onClick={() => setTab('brain')}>Brain</button>
           </div>
-          {tab === 'orders' && <Orders orders={extra?.orders ?? []} layout={layout} selected={selected} onSelect={(id) => setSelected(id)}
+          {tab === 'orders' && <Orders orders={extra?.orders ?? []} layout={layout} selected={selected} onSelect={(id) => setSelected(id)} onDossier={setDossier}
             onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setTab('chat'); }} />}
           {tab === 'chat' && <div className="pane"><ChatDock layout={layout} extra={extra} target={chatTarget} tradeId={tradeId}
             onTarget={(t) => { setChatTarget(t); if (t === ALL) setTradeId(null); }} onClearTrade={() => setTradeId(null)} /></div>}
@@ -119,6 +122,7 @@ export function App() {
         </aside>
       </div>
       <Footer extra={extra} />
+      {dossier && <Dossier id={dossier} layout={layout} onClose={() => setDossier(null)} onAsk={(id, seat) => { setTradeId(id); setChatTarget(seat); setTab('chat'); setSideOpen(true); }} />}
       {showSettings && <Settings layout={layout} onClose={() => setShowSettings(false)} onChanged={(s) => setSpeed(s.speed)} />}
     </div>
   );

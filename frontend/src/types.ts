@@ -61,12 +61,12 @@ export interface Frame {
   extra?: Extra;
 }
 export interface TapeRow { s: string; c: string; p: number; ch: number; r: string }
-export interface VoteCard { seat: string; cabin: number; vote: 'approve' | 'reject'; score: number; reason: string; label: string; confidence?: number; thesis?: string; risk?: string }
+export interface VoteCard { seat: string; cabin: number; vote: 'approve' | 'reject'; score: number; reason: string; label: string; ms?: number; confidence?: number; thesis?: string; risk?: string }
 export interface Mt5Info { status: string; symbol: string; side: string; lots: number; retcode: number | null; msg: string; mt5_ticket: number | null; price: number | null }
 export interface OrderCard {
   id: string; sym: string; cls: string; dir: 'LONG' | 'SHORT'; emitter: string; conviction: number; entry: number; sl: number; tp: number;
   rr: number; desk: number; status: string; stage: string; cabin: number; approvals: number; votes: VoteCard[];
-  ceo: { vote: string; reason: string; label: string; confidence?: number; thesis?: string; risk?: string } | null; mt5?: Mt5Info | null; verdict: string; path: string; paper: string; r: number | null; t0: number;
+  ceo: { vote: string; reason: string; label: string; ms?: number; confidence?: number; thesis?: string; risk?: string } | null; mt5?: Mt5Info | null; verdict: string; path: string; paper: string; r: number | null; t0: number;
   info: Record<string, unknown>; regime: string; dopamine: number | null; features: Record<string, number>;
 }
 export interface FlySnap {
@@ -95,3 +95,18 @@ export interface Extra {
 }
 export interface SeatInfo { id: string; cabin: number; persona: string; role: string; bio: string; lens: string; color: string; state: string; ticket: string | null; label: string; messages: number; model: string; bias: number; notes: string[] }
 export interface ChatMsg { role: 'user' | 'assistant'; content: string; label?: string; ms?: number; seat?: string; color?: string }
+
+export interface TradeDetail {
+  card: OrderCard;
+  verdict_why: string;
+  approved_by: { seat: string; confidence: number }[];
+  rejected_by: { seat: string; confidence: number }[];
+  levels: { entry: number; sl: number; tp: number; risk_abs: number; risk_pct: number | null; reward_abs: number; atr: number; rr: number };
+  found: { emitter: string; conviction: number; regime: string; info: Record<string, unknown>; top_senses: { name: string; v: number }[]; mbon: { name: string; v: number }[]; sim_time: number };
+  facts: Record<string, string | number>;
+  timeline: { stage: string; t: number }[];
+  events: { t: number; kind: string; text: string }[];
+  outcome: { paper: string; how: string; r: number | null; t_fill: number | null; t_resolved: number | null; verdict_was: string | null; note: string } | null;
+  mt5: Mt5Info | null;
+  walker: { desk: number; status: string; stage: string };
+}

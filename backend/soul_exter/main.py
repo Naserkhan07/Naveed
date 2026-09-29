@@ -260,6 +260,14 @@ def api_mt5_report(body: MT5Report, x_bridge_token: str | None = Header(None)):
     return {"ok": bool(pub)}
 
 
+@app.get("/api/trades/{tid}/detail")
+def api_trade_detail(tid: str):
+    d = engine().trade_detail(tid)
+    if d is None:
+        raise HTTPException(404, "unknown trade")
+    return d
+
+
 @app.post("/api/trades/{tid}/mt5")
 def api_trade_mt5(tid: str):
     e = engine()
