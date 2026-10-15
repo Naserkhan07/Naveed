@@ -576,6 +576,7 @@ def _chips_from(quick_actions: Dict[str, str]) -> List[Dict[str, str]]:
         "clean_up": "Tidy up",
         "translate": "Translate",
         "automate": "Automate the boring part",
+        "edit": "Edit this text",
     }
     chips: List[Dict[str, str]] = []
     for key, prompt in quick_actions.items():

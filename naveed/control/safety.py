@@ -35,6 +35,9 @@ from ..config import DEFAULT_BLOCKED_PATTERNS, DEFAULT_DESTRUCTIVE_KEYWORDS, Saf
 from .actions import Action
 
 __all__ = [
+    "WRITE_KINDS",
+    "READ_KINDS",
+    "looks_like_secret_value",
     "RiskLevel",
     "SafetyCheck",
     "SafetyDecision",
@@ -70,6 +73,58 @@ SECRETISH_VALUE = (
 #: the credential rules — including the editing paths, which is the whole reason
 #: this is a named set rather than an inline tuple.
 WRITE_KINDS: Tuple[str, ...] = ("type", "key", "hotkey", "clipboard_set", "edit_field", "skill_tool")
+
+#: Actions that pull text *out* of the machine and into the model's context. They
+#: are checked too: a read-modify-write of a password field is still a way to get
+#: the password, and "select all and copy" is exactly how this reader works.
+READ_KINDS: Tuple[str, ...] = ("read_field",)
+
+#: A field *named* like a credential is never written to or read from, whatever
+#: the value would be: "hunter2" is not caught by a pattern, and the whole point of
+#: the rule is that the human types passwords themselves. Matched against the
+#: action's own target label, so prose that merely mentions a password stays fine.
+CREDENTIAL_FIELD_LABEL = re.compile(
+    r"^[\W_]*(?:password|passwd|passcode|passphrase|pwd|pin|otp|2fa|two[\s-]?factor|"
+    r"verification code|one[\s-]?time (?:code|password)|security code|cvv|cvc|card number|"
+    r"credentials?|api[\s_-]?key|access[\s_-]?token|auth[\s_-]?token|private[\s_-]?key|secret)"
+    r"[\W_]*$",
+    re.IGNORECASE,
+)
+
+
+def _credential_label(action: "Action") -> str:
+    """The action's own target label, when it names one."""
+    for key in ("target", "element", "label", "field"):
+        value = action.params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+#: A credential written *as part of a larger string* — ``password=hunter2``,
+#: ``api_key: sk-…`` — which the whole-value patterns above cannot see because
+#: they anchor at the start of the text.
+SECRET_ASSIGNMENT = re.compile(
+    r"\b(?:password|passwd|pwd|passcode|passphrase|secret|api[_\- ]?key|access[_\- ]?token|"
+    r"auth[_\- ]?token|bearer|private[_\- ]?key|seed phrase|pin)\b\s*[:=]\s*(?P<value>\S{4,})",
+    re.IGNORECASE,
+)
+
+
+def looks_like_secret_value(value: str) -> bool:
+    """Does the right-hand side of ``password=…`` actually look like a secret?
+
+    Deliberately conservative, because the false positive here is expensive: a
+    ticket description that documents ``api_key: placeholder`` must stay editable,
+    while a value that is long and mixed is worth stopping for.  When in doubt, ask
+    the human — which is what the caller does with a ``True``.
+    """
+    cleaned = value.strip().strip("\"'`").strip()
+    if len(cleaned) < 8:
+        return False
+    if len(cleaned) >= 16:
+        return True
+    return any(character.isdigit() for character in cleaned) and not cleaned.isalpha()
 
 
 def _written_text(action: "Action") -> str:
@@ -231,6 +286,39 @@ class SafetyGuard:
         # `edit_field` and `skill_tool` are write paths added later and must be
         # covered by the same rule: a secret must never reach a field just because
         # it travelled as a read-modify-write, a paste, or a knowledge-pack tool.
+        if action.kind in (READ_KINDS + WRITE_KINDS) and self.settings.block_credential_entry:
+            label = _credential_label(action)
+            if label and CREDENTIAL_FIELD_LABEL.match(label):
+                return self._finalize(
+                    action,
+                    SafetyDecision(
+                        level=RiskLevel.BLOCKED,
+                        reason=(
+                            f"“{label}” is a credential field, and Naveed does not touch those — "
+                            "please type this one yourself"
+                        ),
+                        matched=label,
+                    ),
+                )
+
+        if action.kind in READ_KINDS and self.settings.block_credential_entry:
+            label = str(action.params.get("target") or action.params.get("element") or "")
+            haystack = f"{label} {action.note} {raw_text}"
+            for pattern in self._credential:
+                match = pattern.search(haystack)
+                if match:
+                    return self._finalize(
+                        action,
+                        SafetyDecision(
+                            level=RiskLevel.BLOCKED,
+                            reason=(
+                                f"“{match.group(0)}” looks like a credential field, and Naveed will not copy "
+                                "a secret into the model — read it yourself"
+                            ),
+                            matched=match.group(0),
+                        ),
+                    )
+
         if action.kind in WRITE_KINDS and self.settings.block_credential_entry:
             credential_field = ""
             for pattern in self._credential:
@@ -256,6 +344,11 @@ class SafetyGuard:
                     if pattern.match(text):
                         value_is_secret = True
                         break
+                # ``password=hunter2`` inside a longer payload is a credential too,
+                # and the whole-value patterns above cannot see it.
+                assignment = SECRET_ASSIGNMENT.search(text)
+                if not value_is_secret and assignment and looks_like_secret_value(assignment.group("value")):
+                    value_is_secret = True
             # A bare 4-8 digit value going into a *labelled* credential field is a
             # PIN, not prose.
             if not value_is_secret and credential_field and re.fullmatch(r"\d{4,8}", text or ""):

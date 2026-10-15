@@ -109,8 +109,43 @@ Fields are named, not coordinate-guessed, wherever the app allows it:
 1. an explicit coordinate, if the model or the recipe knows one;
 2. a `target` label resolved through OCR (`_resolve_target_point`) — the nearest
    text on screen that looks like a field label (`looks_like_field_label`);
-3. the pack's own route for the app (Polarion's per-field save buttons, the
+3. **the field that already has the keyboard focus**, when there is nothing to
+   click at all;
+4. the pack's own route for the app (Polarion's per-field save buttons, the
    `ctrl+s` classic form, and so on — see `docs/POLARION.md`).
+
+### 5.1 Aiming at the focused field
+
+Some of the places people actually edit have no field to address — a caret in an
+editor pane, a browser's contenteditable, a spreadsheet cell you just opened. The
+model can ask for *there* instead of naming a target:
+
+```json
+{"type": "edit_field", "target": "focused", "operation": "replace", "find": "3", "value": "4"}
+```
+
+`is_focused_target()` decides whether a target means "whatever is focused"
+(`focused`, `current`, `focused field`, `this field`, `selection`, `cursor`,
+`caret`, `here`, …). The rule is strict, and it is the reason this does not break
+the normal case:
+
+* an explicit `global_point` (or `x`/`y`) always wins — a click is a click;
+* a concrete `target` label or `element` behaves exactly as it always did;
+* **only** when there is neither does `read_field` / `edit_field` skip the click
+  and act on the control that already has focus, by marking the field as focused
+  rather than aiming at it.
+
+The alternative — clicking at the caret — is worse than doing nothing: a click on
+empty space moves the caret, and a click that misses the window moves focus to
+another app entirely. Not clicking is the only way to be sure the text that gets
+edited is the text the user is looking at.
+
+A dry run says so, in so many words, before anything happens:
+
+```
+would read the focused field
+would edit the focused field: Replacing '3' with '4'
+```
 
 ## 6. What the model is told, and what it is not asked to do
 
@@ -126,7 +161,14 @@ The planner prompt gets rules, not hints:
 
 Editing is not outside the safety system, and it is not a loophole in it:
 
-* `read_field`, `read_screen`, `find`, `select_all` are `SAFE`;
+* `read_field`, `read_screen`, `find`, `select_all` are `SAFE` — and reading is
+  never a way to harvest secrets: a field whose *own label* names it as a
+  credential (`password`, `passcode`, `PIN`, `CVV`, `token`, `secret`, `API key`,
+  …) is refused for reads as well as writes, and the refusal says to type it
+  yourself. A value that merely *looks* secret-shaped (a long random token) is
+  caught by `looks_like_secret_value` before it is ever written, while a
+  documented placeholder (`set-your-own`, `hunter2`) still round-trips, because a
+  safety rule that blocks legitimate edits gets switched off in a week;
 * `edit_field`, `clear`, `paste`, `undo`, `save` are classified as writes and go
   through the same guard as any other write — `WRITE_KINDS` covers every action
   kind that writes text, so a newly added kind cannot quietly skip the check;
@@ -137,7 +179,7 @@ Editing is not outside the safety system, and it is not a loophole in it:
 
 ## 8. Testing it
 
-Everything above is covered by `tests/test_editing.py` (43 tests) without a
+Everything above is covered by `tests/test_editing.py` (55 tests) without a
 display, a clipboard or a window:
 
 * `apply_edit` is tested as a pure function, including the awkward cases

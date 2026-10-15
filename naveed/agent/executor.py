@@ -122,9 +122,9 @@ class Task:
 def model_unreachable_message(config: Any, detail: str = "") -> str:
     """What to say when the model endpoint is not answering.
 
-    Written for the two ways this actually happens: a local server that is not
+    Written for the two ways this actually happens: a local LLM API that is not
     running (the common one — the address is configured, so nothing complains
-    until a task starts) and a hosted key that is wrong or rate-limited.
+    until a task starts) and a hosted API that is refusing the request.
     """
     base = str(getattr(config.llm, "base_url", "") or "")
     local = any(host in base for host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
@@ -137,7 +137,7 @@ def model_unreachable_message(config: Any, detail: str = "") -> str:
         lines.append("  ollama serve          # then: ollama pull qwen2.5vl:7b")
         lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
     else:
-        lines.append("The key may be wrong, expired or out of quota:")
+        lines.append("That API may be down, or the token it wants may be wrong:")
         lines.append("  python -m naveed --check")
         lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
     if detail:
@@ -349,7 +349,7 @@ class NaveedAgent:
             task.status = TaskStatus.FAILED
             task.error = "no model configured"
             task.result = (
-                "I need a model before I can do this. Add an API key to ~/.naveed/config.env, "
+                "I need an LLM API before I can do this. Point me at one in ~/.naveed/config.env, "
                 "or point me at a local model (LLM_BASE_URL=http://127.0.0.1:11434/v1)."
             )
             self._emit_status("error", task.result)

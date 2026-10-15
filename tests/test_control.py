@@ -159,6 +159,68 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("never runs", check.denial_reason)
 
 
+class EditingSafetyTests(unittest.TestCase):
+    """The write path added for "edit anything anywhere" is guarded too.
+
+    Three ways a secret could otherwise travel through the edit engine: written
+    into a field as the value, written as part of a longer payload
+    (``password=hunter2``), or *read out* of a credential field by the
+    select-all-and-copy that the reader uses.
+    """
+
+    def setUp(self):
+        self.guard = SafetyGuard(SafetySettings(confirm_destructive=True), confirm=lambda prompt, timeout: True)
+
+    def test_a_secret_value_is_refused_when_it_travels_as_an_edit(self):
+        check = self.guard.review(
+            normalize_action({"type": "edit_field", "x": 1, "y": 2, "operation": "set", "value": "sk-live-abcdefghijklmnopqrstuvwxyz"})
+        )
+        self.assertTrue(check.blocked)
+        self.assertIn("secret", check.denial_reason)
+
+    def test_a_secret_inside_a_longer_payload_is_refused(self):
+        check = self.guard.review(
+            normalize_action({"type": "skill_tool", "skill": "polarion", "tool": "update_work_item",
+                              "args": {"id": "PROJ-1", "field": "notes", "value": "password=hunter2-xyz"}})
+        )
+        self.assertTrue(check.blocked, "an embedded credential must not slip through a tool call")
+
+    def test_documenting_a_placeholder_is_still_allowed(self):
+        # A ticket that documents `api_key: <placeholder>` must stay editable, or
+        # the guard would block ordinary work.
+        check = self.guard.review(
+            normalize_action({"type": "edit_field", "x": 1, "y": 2, "operation": "set",
+                              "value": "api_key: set-your-own"})
+        )
+        self.assertTrue(check.is_allowed, check.denial_reason)
+
+    def test_reading_a_credential_field_is_refused(self):
+        check = self.guard.review(normalize_action({"type": "read_field", "target": "Password"}))
+        self.assertTrue(check.blocked)
+        self.assertIn("credential field", check.denial_reason)
+
+    def test_reading_an_ordinary_field_is_fine(self):
+        check = self.guard.review(normalize_action({"type": "read_field", "target": "Description"}))
+        self.assertTrue(check.is_allowed)
+
+    def test_leading_password_between_two_fields(self):
+        # Read-modify-write of a password field is a read of a password field.
+        check = self.guard.review(
+            normalize_action({"type": "edit_field", "x": 1, "y": 2, "operation": "replace",
+                              "old": "old", "new": "new", "target": "Credentials"})
+        )
+        self.assertTrue(check.blocked)
+
+    def test_the_secret_value_heuristic_cases(self):
+        from naveed.control.safety import looks_like_secret_value
+
+        self.assertTrue(looks_like_secret_value("SuperSecret123!"))
+        self.assertTrue(looks_like_secret_value("abcdefghijklmnopqrstuvwxyz"))
+        self.assertFalse(looks_like_secret_value("short"))
+        self.assertFalse(looks_like_secret_value("placeholder"))
+        self.assertFalse(looks_like_secret_value("set-your-own"))
+
+
 class OsControllerTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config()

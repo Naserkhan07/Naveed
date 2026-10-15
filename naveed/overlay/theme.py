@@ -149,7 +149,7 @@ QUICK_ACTIONS: List[Tuple[str, str]] = [
 
 STATUS_TEXT: Dict[str, str] = {
     "connected": "Connected",
-    "offline": "Offline — no key",
+    "offline": "Offline — no LLM API",
     "watching": "Watching your screen",
     "idle": "Ready when you are",
 }

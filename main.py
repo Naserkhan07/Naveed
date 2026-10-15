@@ -5,10 +5,10 @@ This is the entry point to double-click. It does the four things a person expect
 from "run the bot":
 
 1. finds Naveed (next to this file, or installed), and says so if it cannot;
-2. makes sure there is a config, offering the sensible defaults for whatever it
-   can see on this machine (a local Ollama, or an OpenAI-compatible key already in
-   the environment);
-3. tells you the truth about the model *before* the bot appears — a configured
+2. makes sure there is a config, offering the sensible defaults for whatever LLM
+   API it can see on this machine (a local Ollama or LM Studio that answers, or an
+   endpoint already in the environment);
+3. tells you the truth about the LLM API *before* the bot appears — a configured
    address that nothing is answering on is the single most confusing failure, so
    it is reported here rather than after a task dies;
 4. starts the bot: the mascot appears centred just below the camera and can be
@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -83,50 +84,59 @@ def _first_run_hints(config, *, stream=None) -> None:
             print("  without PySide6 I will still come up in your browser — no window needed.", file=stream)
         print()
 
-    if not config.llm.configured:
-        print("I have no model yet. Any OpenAI-compatible one works:", file=stream)
-        print("  python main.py --setup --provider ollama     # local, free, nothing leaves your PC", file=stream)
-        print("  python main.py --setup --provider openai     # or openrouter / groq", file=stream)
+    if not config.source_file or not config.llm.configured:
+        print("I do my thinking with an LLM *API* (a URL and a model — no keys involved).", file=stream)
+        print(f"  I am using:  {config.llm.base_url}   ({config.llm.model})", file=stream)
+        print("  point me at a different one with:", file=stream)
+        print("    python main.py --setup --provider ollama     # local, free, nothing leaves your PC", file=stream)
+        print("    python main.py --setup --provider lmstudio   # local server with a GUI", file=stream)
+        print("    python main.py --api http://127.0.0.1:1234/v1 --model qwen2.5-vl-7b-instruct", file=stream)
         print()
 
 
 def _default_setup_if_possible(config, *, stream=None) -> None:
-    """Write a first config when a model is obviously available.
+    """Write a first config when an LLM API is obviously available.
 
-    Two cases are unambiguous enough to do without being asked: a local Ollama
-    that is already answering, and an OpenAI-compatible key sitting in the
-    environment. Anything else is left to ``--setup``, because guessing a provider
-    would be worse than asking.
+    Naveed is configured with an *API*, never with a key, so there are exactly two
+    cases worth doing without being asked: an endpoint handed to us in the
+    environment (``LLM_API``), and a local server that is already *answering* on its
+    usual port (Ollama 11434, LM Studio 1234). Anything else is left to ``--setup``:
+    guessing an endpoint that refuses connections is the exact confusion this
+    function exists to avoid.
     """
     stream = stream or sys.stdout
-    if config.llm.configured or config.source_file:
-        return
+    if config.source_file:
+        return  # an existing config is the user's, and is never rewritten here
 
     from naveed.agent.llm import LLMClient
-    from naveed.config import PROVIDER_PRESETS, Config, load_config, write_env_file
+    from naveed.config import PROVIDER_PRESETS, Config, write_env_file
 
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if key:
-        name = "openai"
+    endpoint = os.environ.get("LLM_API") or os.environ.get("NAVEED_LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or ""
+    model = os.environ.get("LLM_MODEL") or os.environ.get("NAVEED_MODEL") or ""
+
+    chosen: Optional[Tuple[str, str, str]] = None
+    if endpoint:
+        chosen = ("from your environment", endpoint, model or "gpt-4o-mini")
     else:
-        # A local Ollama is only assumed when it is *answering* on its default
-        # port; pointing the bot at an address that refuses connections is the
-        # exact confusion this function exists to avoid.
-        name = "ollama"
-        preset = PROVIDER_PRESETS[name]
-        candidate = load_config(**{"llm.base_url": preset["base_url"], "llm.model": preset["model"]})
-        reachable, _ = LLMClient(candidate.llm).probe(timeout=1.2)
-        if not reachable:
-            return
+        for name in ("ollama", "lmstudio"):
+            preset = PROVIDER_PRESETS[name]
+            candidate = Config(home=config.home)
+            candidate.llm.base_url = preset["base_url"]
+            candidate.llm.model = preset["model"]
+            reachable, _ = LLMClient(candidate.llm).probe(timeout=1.2)
+            if reachable:
+                chosen = (name, preset["base_url"], preset["model"])
+                break
+    if chosen is None:
+        return
 
-    preset = PROVIDER_PRESETS[name]
+    name, base_url, model_name = chosen
     fresh = Config(home=config.home)     # write where *this* config was loaded from
-    fresh.llm.base_url = preset["base_url"]
-    fresh.llm.model = preset["model"]
-    fresh.llm.api_key = key
+    fresh.llm.base_url = base_url
+    fresh.llm.model = model_name
     path = write_env_file(fresh)
     if path:
-        print(f"I wrote a starting config for you: {path}  (provider: {name})", file=stream)
+        print(f"I wrote a starting config for you: {path}  (LLM API: {name})", file=stream)
         print()
 
 

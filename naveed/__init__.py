@@ -20,7 +20,7 @@ from typing import Any, Dict
 
 from .lazy import MissingDependencyError, load, optional, report  # noqa: F401
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["__version__", "MissingDependencyError", "load", "optional", "report"]
 
 _LAZY_SUBMODULES: Dict[str, str] = {

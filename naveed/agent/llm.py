@@ -13,7 +13,8 @@ It supports exactly what a screen-operating agent needs:
   and the reply is still parsed defensively (:func:`extract_json`) because small
   models wrap JSON in prose or code fences;
 * **retries** — transient network and 429/5xx failures are retried with backoff,
-  while a 401 tells the user their key is wrong instead of silently looping;
+  while a 401 says the API refused the request (and to check ``LLM_TOKEN``) instead
+  of silently looping;
 * **cancellation** — every call takes a ``should_stop`` callable so pressing Stop
   in the panel aborts a request in flight.
 """
@@ -224,9 +225,8 @@ class LLMClient:
         """Send one completion request and return the parsed reply."""
         if not self.settings.configured:
             raise LLMError(
-                "No model is configured. Put an API key (or point Naveed at a local "
-                "server) in ~/.naveed/config.env, for example:\n"
-                "  LLM_BASE_URL=http://127.0.0.1:11434/v1\n  LLM_MODEL=qwen2.5vl:7b"
+                "No LLM API is configured. Point Naveed at one in ~/.naveed/config.env, for example:\n"
+                "  LLM_API=http://127.0.0.1:11434/v1\n  LLM_MODEL=qwen2.5vl:7b"
             )
 
         payload: Dict[str, Any] = {
@@ -264,14 +264,17 @@ class LLMClient:
         if not base:
             return False, "no base URL configured"
         request = urllib.request.Request(f"{base}/models", method="GET")
-        if self.settings.api_key:
-            request.add_header("Authorization", f"Bearer {self.settings.api_key}")
+        if self.settings.token:
+            request.add_header("Authorization", f"Bearer {self.settings.token}")
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
                 body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
-                return False, f"{base} answered but rejected the key (HTTP {error.code})"
+                return False, (
+                    f"{base} answered, but rejected the request (HTTP {error.code}) — "
+                    "if this API asks for a token, set LLM_TOKEN"
+                )
             if error.code in (404, 405):
                 return True, f"{base} is answering (it has no model list to check)"
             return False, f"{base} answered with HTTP {error.code}"
@@ -322,8 +325,8 @@ class LLMClient:
         url = self.settings.base_url.rstrip("/") + "/chat/completions"
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.settings.api_key:
-            headers["Authorization"] = f"Bearer {self.settings.api_key}"
+        if self.settings.token:
+            headers["Authorization"] = f"Bearer {self.settings.token}"
         headers.update(self.settings.extra_headers or {})
 
         attempts = max(1, self.settings.max_retries + 1)
@@ -344,7 +347,8 @@ class LLMClient:
                     pass
                 if error.code == 401:
                     raise LLMError(
-                        f"The model server rejected the API key (401). Check LLM_API_KEY in {self.settings.base_url}.",
+                        f"The LLM API at {self.settings.base_url} rejected the request (401). "
+                        "If it asks for a token, set LLM_TOKEN in ~/.naveed/config.env.",
                         status=401,
                     ) from error
                 if error.code == 400 and json_mode and "response_format" in detail:

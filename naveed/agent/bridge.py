@@ -70,6 +70,11 @@ QUICK_ACTIONS: Dict[str, str] = {
     "clean_up": "Tidy up my desktop: close the windows and tabs that are clearly not needed, and leave my work untouched.",
     "translate": "Translate the main text visible on my screen into English.",
     "automate": "Look at what I am doing on screen and do the repetitive part of it for me.",
+    "edit": (
+        "Edit the text I am looking at right now: read its exact current value first, then change only the "
+        "part that needs changing and leave everything else — including the formatting — exactly as it is. "
+        "Verify the change afterwards and tell me what you changed."
+    ),
     "summarise_actions": "__stats__",
 }
 

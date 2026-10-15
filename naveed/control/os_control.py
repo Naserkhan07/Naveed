@@ -347,6 +347,24 @@ class OsController:
         return str(outcome), {"result": str(outcome)}
 
     # --- handlers: editing (read-modify-write, verified) ----------------
+    def _wants_focused_field(self, action: Action, frame: Any) -> bool:
+        """True when the action means "whatever has focus" rather than a target.
+
+        Coordinates always win (the model looked at the screen and picked a spot),
+        a real label wins next (it can be found by OCR), and only when neither is
+        present does the action mean the focused control.  That keeps editing
+        *anywhere* — including a caret in an editor that cannot be named — from
+        changing what an action with a target does.
+        """
+        from .editing import is_focused_target
+
+        if self.global_point(action, frame) is not None:
+            return False
+        label = action.get("target") or action.get("element")
+        if label and not is_focused_target(label):
+            return False
+        return True
+
     def _field_editor(self):
         """A :class:`FieldEditor` wired to this controller.
 
@@ -368,11 +386,12 @@ class OsController:
     def _do_read_field(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
         """Read a field's *exact* current text (click, select all, copy)."""
         editor = self._field_editor()
+        focused = self._wants_focused_field(action, frame)
         if self.config.safety.dry_run:
-            where = action.get("target") or action.get("element") or "the field"
+            where = "the focused field" if focused else (action.get("target") or action.get("element") or "the field")
             return f"would read {where}", {"dry_run": True}
-        point = self.global_point(action, frame) or self._resolve_target_point(action, frame)
-        reading = editor.read(point, frame=frame, target=str(action.get("target") or ""))
+        point = None if focused else (self.global_point(action, frame) or self._resolve_target_point(action, frame))
+        reading = editor.read(point, frame=frame, target=str(action.get("target") or ""), focused=focused)
         if not reading.trustworthy:
             raise ActionError(reading.error or "I could not read that field")
         preview = reading.text if len(reading.text) <= 400 else reading.text[:400] + "…"
@@ -388,19 +407,21 @@ class OsController:
         editor = self._field_editor()
         request = parse_edit_request(action.params)
         request.note = action.note or request.note
+        focused = self._wants_focused_field(action, frame)
         if self.config.safety.dry_run:
             # A dry run must not need the live screen: saying "would have" is the
             # whole point, and failing to find a field that is not being touched
             # would make --dry-run useless for exactly the routine you want to
             # review before letting it loose.
-            where = action.get("target") or action.get("element") or "the field"
+            where = "the focused field" if focused else (action.get("target") or action.get("element") or "the field")
             return f"would edit {where}: {request.describe()}", {"dry_run": True}
-        point = self.global_point(action, frame)
+        point = None if focused else self.global_point(action, frame)
         outcome = editor.edit(
             request,
             frame=frame,
             target=str(action.get("target") or action.get("element") or ""),
             point=point,
+            focused=focused,
         )
         payload = outcome.as_dict()
         payload["expected"] = outcome.expected

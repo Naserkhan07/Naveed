@@ -601,6 +601,136 @@ class PolarionApiTests(unittest.TestCase):
         self.assertIn("/polarion/#/project/PROJ/workitem?id=PROJ-1042", url)
 
 
+class PolarionFastPathCheckTests(unittest.TestCase):
+    """``--polarion-check``: what is configured, and is it answering?
+
+    The probe exists to fail *before* a task does, so the tests are about the
+    failure paths as much as the happy one: no configuration, no project, a wrong
+    token, a server that is not there. None of them may raise.
+    """
+
+    def setUp(self):
+        self.config = load_config()
+        self.config.skills.polarion_base_url = ""
+        self.config.skills.polarion_token = ""
+        self.config.skills.polarion_project = ""
+        self.calls = []
+
+    def configured(self, **kwargs):
+        self.config.skills.polarion_base_url = "https://alm.example.com"
+        self.config.skills.polarion_project = "PROJ"
+        for key, value in kwargs.items():
+            setattr(self.config.skills, key, value)
+        return self.config
+
+    def stub(self, *, items=1, error=None):
+        """Replace the one REST call the probe makes, and record it."""
+        def fake_request(config, path, *, method="GET", payload=None, timeout=30.0):
+            self.calls.append({"path": path, "method": method, "timeout": timeout})
+            if error is not None:
+                raise error
+            return {"status": 200, "data": {"data": [
+                {"id": f"PROJ/PROJ-{index}", "attributes": {"title": f"Item {index}"}}
+                for index in range(items)
+            ]}}
+
+        return mock.patch.object(polarion, "polarion_request", fake_request)
+
+    # --- what is configured -------------------------------------------------
+
+    def test_status_says_nothing_is_configured_without_asking_anything(self):
+        status = polarion.api_status(self.config)
+        self.assertFalse(status["configured"])
+        self.assertEqual(status["base_url"], "")
+        self.assertEqual(status["project"], "")
+        self.assertFalse(status["token_set"])
+        self.assertEqual(self.calls, [], "a status report is not a network call")
+
+    def test_status_reports_the_configured_server_without_asking_it(self):
+        status = polarion.api_status(self.configured(polarion_token="pat#1"))
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["base_url"], "https://alm.example.com")
+        self.assertEqual(status["project"], "PROJ")
+        self.assertTrue(status["token_set"])
+        self.assertFalse(status["writes"], "writes stay off until they are asked for")
+
+    def test_writes_are_reported_as_on_only_when_they_are(self):
+        self.config.skills.allow_api_writes = True
+        status = polarion.api_status(self.configured())
+        self.assertTrue(status["writes"])
+        self.config.skills.allow_api_writes = False
+
+    def test_status_never_raises_on_a_config_with_no_skills_at_all(self):
+        status = polarion.api_status(object())
+        self.assertFalse(status["configured"], "a missing config is 'not configured', not a traceback")
+        self.assertEqual(status["base_url"], "")
+
+    # --- is it answering ----------------------------------------------------
+
+    def test_probe_reports_not_configured_instead_of_failing(self):
+        ok, sentence = polarion.api_probe(self.config)
+        self.assertFalse(ok)
+        self.assertIn("not configured", sentence)
+        self.assertIn("SKILLS_POLARION_BASE_URL", sentence)
+        self.assertEqual(self.calls, [], "an unconfigured probe must not touch the network")
+
+    def test_probe_asks_for_one_item_and_nothing_else(self):
+        with self.stub(items=1):
+            ok, sentence = polarion.api_probe(self.configured())
+        self.assertTrue(ok)
+        self.assertIn("https://alm.example.com", sentence)
+        self.assertIn("PROJ", sentence)
+        self.assertIn("1 item", sentence)
+        (call,) = self.calls
+        self.assertEqual(call["method"], "GET")
+        self.assertIn("/polarion/rest/v1/projects/PROJ/workitems", call["path"])
+        self.assertIn("limit=1", call["path"], "the check must not pull a page of work items")
+        self.assertEqual(self.calls[0]["path"].count("?"), 1, "one query string, one request")
+
+    def test_probe_refuses_to_guess_a_project(self):
+        self.configured()
+        self.config.skills.polarion_project = ""
+        with self.stub():
+            ok, sentence = polarion.api_probe(self.config, project="")
+        self.assertFalse(ok)
+        self.assertIn("SKILLS_POLARION_PROJECT", sentence)
+        self.assertEqual(self.calls, [], "no project means no request to make")
+
+    def test_probe_takes_a_project_it_is_given(self):
+        self.configured()
+        self.config.skills.polarion_project = ""
+        with self.stub():
+            ok, sentence = polarion.api_probe(self.config, project="OPS")
+        self.assertTrue(ok)
+        self.assertIn("OPS", sentence)
+        self.assertIn("/projects/OPS/workitems", self.calls[0]["path"])
+
+    def test_probe_translates_a_wrong_token_into_a_sentence(self):
+        with self.stub(error=RuntimeError("Polarion refused the request (401). Check SKILLS_POLARION_TOKEN")):
+            ok, sentence = polarion.api_probe(self.configured())
+        self.assertFalse(ok)
+        self.assertIn("401", sentence)
+        self.assertIn("SKILLS_POLARION_TOKEN", sentence)
+
+    def test_probe_translates_an_unreachable_server_into_a_sentence(self):
+        with self.stub(error=RuntimeError("Could not reach Polarion at https://alm.example.com: refused")):
+            ok, sentence = polarion.api_probe(self.configured())
+        self.assertFalse(ok)
+        self.assertIn("Could not reach Polarion", sentence)
+
+    def test_probe_reports_an_unexpected_error_rather_than_raising(self):
+        with self.stub(error=ValueError("something nobody predicted")):
+            ok, sentence = polarion.api_probe(self.configured())
+        self.assertFalse(ok)
+        self.assertIn("something nobody predicted", sentence)
+
+    def test_an_empty_first_page_is_still_a_healthy_server(self):
+        with self.stub(items=0):
+            ok, sentence = polarion.api_probe(self.configured())
+        self.assertTrue(ok, "an empty project is a working server")
+        self.assertIn("0 item", sentence)
+
+
 class ConfigFileTests(unittest.TestCase):
     """The config file itself, because a silently ignored setting is a bug the
     user can never diagnose: the shipped example annotates nearly every line."""
@@ -631,13 +761,17 @@ class ConfigFileTests(unittest.TestCase):
         example = Path(__file__).resolve().parent.parent / "examples" / "config.env.example"
         values = self.parse(example.read_text(encoding="utf-8"))
         # every uncommented key in the shipped example must be a real setting
+        from naveed.config import _FIELD_ALIASES
+
         config = load_config()
         sections = {name.lower(): section for name, section in vars(config).items() if hasattr(section, "__dataclass_fields__")}
         unknown = []
         for key in values:
             head, _, tail = key.partition("_")
-            section = sections.get(head.lower())
-            if section is None or not hasattr(section, tail.lower()):
+            section_name = head.lower()
+            field_name = _FIELD_ALIASES.get(section_name, {}).get(tail.lower(), tail.lower())
+            section = sections.get(section_name)
+            if section is None or not hasattr(section, field_name):
                 unknown.append(key)
         self.assertEqual(unknown, [])
         self.assertEqual(values["SKILLS_TEACH_HOTKEY"], "ctrl+alt+t")

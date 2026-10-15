@@ -83,9 +83,10 @@ class NaveedApp:
         print(f"  python      {report['python']}  ({report['platform']})", file=stream)
         print(f"  config      {report['config_file'] or '(defaults — none written yet)'}", file=stream)
         print(f"  home        {report['home']}", file=stream)
-        print(f"  model       {report['model']}  {'✓ configured' if report['model_ready'] else '✗ no key/local server'}", file=stream)
+        print(f"  llm api     {report['model']}  {'✓ configured' if report['model_ready'] else '✗ none set'}", file=stream)
         if not report["model_ready"]:
-            print("              add one:  python -m naveed --setup --provider ollama", file=stream)
+            print("              pick one:  python -m naveed --setup --provider ollama|lmstudio|openai", file=stream)
+            print("              or point at any:  python -m naveed --api http://127.0.0.1:11434/v1", file=stream)
         elif report.get("model_probe_ran"):
             reachable = report.get("model_reachable")
             mark = "✓" if reachable else "✗"
@@ -299,7 +300,7 @@ class NaveedApp:
 
         This is the payoff of teaching: the steps are Naveed's own, so replaying
         them needs no planning model at all. That makes a demonstrated task work
-        offline, on a machine with no API key, and identically every time.
+        offline, on a machine with no LLM API at all, and identically every time.
         """
         from .agent.bridge import AgentBridge
         from .skills.base import SkillStore
@@ -382,14 +383,24 @@ class NaveedApp:
         description: str = "",
         variables: Optional[Dict[str, str]] = None,
         seconds: float = 0.0,
+        countdown: float = 0.0,
+        skill: str = "",
         verbose: bool = True,
     ) -> int:
-        """Learn a routine by watching the user perform it once."""
+        """Learn a routine by watching the user perform it once.
+
+        ``countdown`` gives you a few seconds to switch to the application you are
+        demonstrating in — training yourself to start the moment it says "recording"
+        is a poor way to record a routine. ``skill`` (or a name that reads like one
+        of the packs, e.g. ``polarion-set-status``) prints what that pack already
+        knows, so the demonstration complements it instead of repeating it.
+        """
         from .control.editing import looks_like_field_label
         from .skills.base import SkillStore
         from .skills.recorder import ActionRecorder, Tailer, distill_recipe, suggest_parameters
 
         store = SkillStore(self.config).load()
+        self._print_pack_tips(store, skill or name)
         watcher = None
         capture = None
         try:
@@ -467,6 +478,17 @@ class NaveedApp:
             print("could not hook the mouse and keyboard on this system", file=sys.stderr)
             return 1
 
+        if countdown and countdown > 0:
+            print(f"Switch to the application you are teaching me. Recording starts in {countdown:.0f}s.")
+            try:
+                for remaining in range(int(countdown), 0, -1):
+                    print(f"  {remaining}…", flush=True)
+                    time.sleep(1.0)
+            except KeyboardInterrupt:
+                tailer.stop()
+                print("\n(cancelled)")
+                return 1
+
         print(f"Recording “{name}”. Do the task once, the way you normally would.")
         print("  · Naveed is only watching: it will not act while you demonstrate.")
         print("  · Press Ctrl+Alt+T or Ctrl-C when you are finished.")
@@ -514,6 +536,70 @@ class NaveedApp:
             print(f"  {index}. {step.kind} {detail}")
         print(f"\nSaved to {path}")
         print(f"Run it again with:\n  python -m naveed --run-recipe {recipe.name}" + "".join(f" --arg {name}=…" for name in recipe.params))
+        return 0
+
+    def _print_pack_tips(self, store: Any, name: str) -> None:
+        """Show what a knowledge pack already knows, before you record over it.
+
+        "Train it on Polarion" is two things: the pack (what Polarion *is* — fields,
+        shortcuts, workflow gotchas, and the REST tools) and the demonstration (how
+        *your* Polarion is laid out). This prints the first so the second is aimed.
+        """
+        wanted = str(name or "").strip().lower()
+        if not wanted:
+            return
+        match = None
+        for skill in store.skills:
+            if wanted == skill.id or wanted.startswith(f"{skill.id}-") or skill.id in wanted:
+                match = skill
+                break
+        if match is None:
+            return
+        print(f"Recording against the “{match.name}” pack — it already knows:")
+        for fact in match.knowledge[:4]:
+            print(f"  • {fact}")
+        if match.gotchas:
+            print(f"  ! {match.gotchas[0]}")
+        if match.recipes:
+            print("  routines it already has: " + ", ".join(recipe.name for recipe in match.recipes))
+            print("  (a demonstration adds a new one; it does not replace these)")
+        print()
+
+    def polarion_check(self, *, probe: bool = True) -> int:
+        """Is the Polarion fast path configured, and is that API answering?
+
+        Printed *before* you teach it anything, because the two ways of working in
+        Polarion are worth choosing between deliberately: with a working API, reading
+        and editing a work item is exact and never clicks the wrong row; without one,
+        the pack drives the UI like a person, and ``--train`` is how you make that
+        reliable for your instance.
+        """
+        from .skills import polarion
+
+        status = polarion.api_status(self.config)
+        print("Polarion pack (Siemens Polarion ALM)")
+        if status["configured"]:
+            print(f"  api         configured at {status['base_url']}")
+            print(f"  project     {status['project'] or '(set SKILLS_POLARION_PROJECT)'}")
+            print(f"  access      {('token set' if status['token_set'] else 'no token — a local/SSO server may not need one')}")
+            print(
+                "  api writes  "
+                + ("ON — updates and comments will be sent to Polarion" if status["writes"] else "OFF (SKILLS_ALLOW_API_WRITES=true enables them)")
+            )
+        else:
+            print("  api         not configured — Naveed will drive the Polarion UI instead")
+            print("              to use the exact fast path, set in ~/.naveed/config.env:")
+            print("                SKILLS_POLARION_BASE_URL=https://polarion.example.com")
+            print("                SKILLS_POLARION_PROJECT=PROJ")
+            print("                SKILLS_POLARION_TOKEN=…          # if your server asks for one")
+        if probe:
+            ok, sentence = polarion.api_probe(self.config)
+            print(f"  {'✓' if ok else '✗'} api probe: {_wrap(sentence, 72, '              ')}")
+        print()
+        print("  what it knows:   python -m naveed --skills")
+        print("  teach your own:  python -m naveed --train polarion-set-status")
+        print("  replay without the model:")
+        print("                   python -m naveed --run-recipe polarion-open-work-item --arg work_item_id=PROJ-1234")
         return 0
 
     def _teach_stop_requested(self) -> bool:
@@ -641,7 +727,7 @@ class NaveedApp:
         return 0
 
     # --- setup ---------------------------------------------------------------
-    def setup(self, *, provider: str = "", model: str = "", api_key: str = "", voice: str = "", force: bool = False) -> int:
+    def setup(self, *, provider: str = "", model: str = "", token: str = "", voice: str = "", force: bool = False) -> int:
         """Write a working ``config.env`` (and optionally fetch a voice model)."""
         config = self.config
         if provider:
@@ -653,8 +739,8 @@ class NaveedApp:
             config.llm.model = model or preset["model"]
         if model:
             config.llm.model = model
-        if api_key:
-            config.llm.api_key = api_key
+        if token:
+            config.llm.token = token
 
         target = os.path.join(str(config.base_dir), "config.env")
         if os.path.exists(target) and not force:
@@ -777,6 +863,26 @@ def _open_url(url: str) -> None:
         webbrowser.open(url)
     except Exception:  # a headless box has no browser, which is not an error
         logger.debug("no browser for %s", url)
+
+
+def _wrap(text: str, width: int, indent: str = "") -> str:
+    """Wrap a sentence onto the terminal, breaking at words, never mid-word.
+
+    The probe's answers are sentences a human has to read (a wrong token, a wrong
+    project, a server that is not running); one long unwrapped line is the same
+    information, unreadable.
+    """
+    lines: List[str] = []
+    line = ""
+    for word in str(text).split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        lines.append(line)
+    return ("\n" + indent).join(lines) if lines else ""
 
 
 def _echo(enabled: bool, line: str) -> None:

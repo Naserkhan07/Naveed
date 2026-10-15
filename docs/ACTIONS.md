@@ -51,8 +51,8 @@ model can see that its last action achieved nothing).
 | `clipboard_set` | `text` (or `clipboard`) | Copies text to the clipboard. |
 | `ask` | `question` | Asks the human and *waits* for the answer. |
 | `done` | `summary` | Ends the task with that sentence. |
-| `read_field` | `target` (label) *or* `x`, `y`; `key`, `modifiers` | Clicks the field, selects everything, copies, and returns the **exact** current text. The only honest way to know what a field contains. |
-| `edit_field` | `target` *or* `x`, `y`; `operation`, `text`/`value`, `old`/`new`, `occurrence`, `save` | Reads the field, computes the change, writes it back, saves it, then **reads it back to verify**. See [EDITING.md](EDITING.md) for the operations. |
+| `read_field` | `target` (label) *or* `x`, `y`, or `target: "focused"`; `key`, `modifiers` | Clicks the field, selects everything, copies, and returns the **exact** current text. The only honest way to know what a field contains. With `focused` (and no point) it reads whichever control already has keyboard focus, **without clicking** — the only way to read a caret in an editor. |
+| `edit_field` | `target` *or* `x`, `y`, or `target: "focused"`; `operation`, `text`/`value`, `old`/`new`, `occurrence`, `save` | Reads the field, computes the change, writes it back, saves it, then **reads it back to verify**. `focused` edits where the caret already is (again: no click, so the caret cannot move). See [EDITING.md](EDITING.md) for the operations. |
 | `select_all` | `target` *or* `x`, `y` | Selects the whole field/document body (`ctrl+a` in context). |
 | `find` | `text`, `target` *or* `x`, `y` | Opens the app's own find bar and searches — jumping to a value beats scrolling to it. |
 | `undo` | `times` (default 1) | `ctrl+z` — the escape hatch when an edit went wrong. |

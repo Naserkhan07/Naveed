@@ -98,11 +98,11 @@ class ImportTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Naveed", result.stdout)
-        self.assertIn("model", result.stdout)
+        self.assertIn("llm api", result.stdout)
 
 
 class FirstRunTests(unittest.TestCase):
-    """It writes a config only when a model is *obviously* available."""
+    """It writes a config only when an LLM API is *obviously* available."""
 
     def test_it_writes_nothing_when_no_model_is_reachable(self):
         with tempfile.TemporaryDirectory() as home:
@@ -126,23 +126,26 @@ class FirstRunTests(unittest.TestCase):
             self.assertTrue(written.exists(), "a reachable local model should give a working config")
             body = written.read_text(encoding="utf-8")
             self.assertIn("127.0.0.1:11434", body)
-            self.assertIn("provider: ollama", buffer.getvalue())
+            self.assertIn("LLM API: ollama", buffer.getvalue())
 
-    def test_it_prefers_an_api_key_that_is_already_in_the_environment(self):
+    def test_it_uses_an_llm_api_given_in_the_environment(self):
+        """The endpoint is the configuration — there is no key to look for."""
         with tempfile.TemporaryDirectory() as home:
             config = Config(home=home)
-            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-123"}), redirect_stdout(io.StringIO()):
+            environment = {"LLM_API": "http://127.0.0.1:8080/v1", "LLM_MODEL": "my-small-model"}
+            with mock.patch.dict(os.environ, environment), redirect_stdout(io.StringIO()):
                 launcher._default_setup_if_possible(config)
             body = (Path(home) / "config.env").read_text(encoding="utf-8")
-            self.assertIn("api.openai.com", body)
-            self.assertIn("sk-test-123", body)
+            self.assertIn("LLM_API=http://127.0.0.1:8080/v1", body)
+            self.assertIn("LLM_MODEL=my-small-model", body)
+            self.assertNotIn("API_KEY", body, "a key is not a concept in this project")
 
     def test_it_never_overwrites_an_existing_config(self):
         with tempfile.TemporaryDirectory() as home:
             written = Path(home) / "config.env"
             written.write_text("# mine\nLLM_MODEL=my-choice\n", encoding="utf-8")
             config = load_config(env_file=str(written), use_environment=False, ensure_dirs=False)
-            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-123"}), redirect_stdout(io.StringIO()):
+            with mock.patch.dict(os.environ, {"LLM_API": "http://127.0.0.1:8080/v1"}), redirect_stdout(io.StringIO()):
                 launcher._default_setup_if_possible(config)
             self.assertIn("my-choice", written.read_text(encoding="utf-8"))
 
@@ -158,14 +161,17 @@ class FirstRunTests(unittest.TestCase):
         self.assertIn('pip install "naveed[ui,capture,input]"', text)
         self.assertIn("--setup --provider ollama", text)
 
-    def test_a_configured_model_is_not_nagged_about(self):
+    def test_a_configured_machine_is_not_nagged_about_the_api(self):
         config = Config()
+        config.source_file = "/tmp/config.env"      # there is a config already
         config.llm.base_url = "http://127.0.0.1:11434/v1"
         config.llm.model = "qwen2.5vl:7b"
         buffer = io.StringIO()
         with mock.patch("naveed.lazy.find_spec_safe", return_value=object()), redirect_stdout(buffer):
             launcher._first_run_hints(config)
-        self.assertNotIn("no model yet", buffer.getvalue())
+        text = buffer.getvalue()
+        self.assertNotIn("point me at a different one", text)
+        self.assertNotIn("no model yet", text)
 
 
 if __name__ == "__main__":

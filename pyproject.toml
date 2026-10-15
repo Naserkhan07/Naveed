@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "naveed"
-version = "0.2.0"
+version = "0.3.0"
 description = "A floating desktop AI companion that watches your screen and does the task on it, with an optional browser front end"
 readme = "README.md"
 license = { file = "LICENSE" }

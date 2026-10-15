@@ -9,7 +9,7 @@ order, last one wins:
 3. real environment variables,
 4. explicit CLI flags (``python -m naveed --model ...``).
 
-The file is ``.env``-style on purpose: it keeps API keys out of source control,
+The file is ``.env``-style on purpose: it keeps credentials out of source control,
 works the same on every OS, and can be edited by hand or from the panel's
 settings sheet.
 """
@@ -40,7 +40,9 @@ __all__ = [
 APP_DIR_NAME = ".naveed"
 ENV_FILE_NAME = "config.env"
 
-#: Ready-made providers, so "use a small LLM" is a two-word answer.
+#: Ready-made **LLM APIs**, so "use a small LLM" is a two-word answer. Naveed is
+#: configured with an *API* — a URL and a model — not with a key: everything local
+#: needs no token at all, and a hosted gateway only needs one if it asks for it.
 PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -50,7 +52,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
         "model": "qwen/qwen2.5-vl-7b-instruct",
-        "note": "cheap vision models, one key for many vendors",
+        "note": "cheap vision models from many vendors behind one API",
     },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
@@ -60,7 +62,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
     "ollama": {
         "base_url": "http://127.0.0.1:11434/v1",
         "model": "qwen2.5vl:7b",
-        "note": "fully local, no key needed",
+        "note": "fully local, no token needed",
     },
     "lmstudio": {
         "base_url": "http://127.0.0.1:1234/v1",
@@ -74,16 +76,18 @@ PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
 
 @dataclass
 class LLMSettings:
-    """The "small LLM" that decides what to click.
+    """The "small LLM" that decides what to click — configured as an *API*.
 
-    Any OpenAI-compatible endpoint works, including a local llama.cpp/Ollama
-    server, so Naveed can run with no cloud key at all when a local model is
-    present.
+    Naveed is pointed at an OpenAI-compatible LLM API: a URL and a model name.
+    That is the whole configuration for a local Ollama/LM Studio/llama.cpp server,
+    which is the intended way to run it. ``token`` exists only for the case where
+    an endpoint insists on an ``Authorization`` header (a hosted gateway, usually);
+    it is optional, it is never required, and nothing in Naveed asks for one.
     """
 
-    base_url: str = "https://api.openai.com/v1"
-    api_key: str = ""
-    model: str = "gpt-4o-mini"
+    base_url: str = "http://127.0.0.1:11434/v1"
+    token: str = ""
+    model: str = "qwen2.5vl:7b"
     vision: bool = True
     temperature: float = 0.15
     max_tokens: int = 700
@@ -95,11 +99,19 @@ class LLMSettings:
 
     @property
     def configured(self) -> bool:
-        """True when a request could plausibly succeed."""
-        if not self.model or not self.base_url:
-            return False
-        local = any(host in self.base_url for host in ("127.0.0.1", "localhost", "0.0.0.0"))
-        return bool(self.api_key) or local
+        """True when an LLM API is set up at all.
+
+        Deliberately says nothing about keys: whether the API *answers* is a
+        question for :meth:`naveed.agent.llm.LLMClient.probe`, which reports what
+        the endpoint actually said. Claiming "no model" because there is no key is
+        what made a perfectly good local server look unconfigured.
+        """
+        return bool(self.model and self.base_url)
+
+    @property
+    def local(self) -> bool:
+        """True for an endpoint on this machine (no token, nothing leaves the PC)."""
+        return any(host in self.base_url for host in ("127.0.0.1", "localhost", "0.0.0.0", "[::1]"))
 
     @property
     def label(self) -> str:
@@ -329,8 +341,8 @@ class Config:
     # --- serialisation -------------------------------------------------
     def as_dict(self, *, redact: bool = True) -> Dict[str, Any]:
         payload = asdict(self)
-        if redact and payload.get("llm", {}).get("api_key"):
-            payload["llm"]["api_key"] = "***"
+        if redact and payload.get("llm", {}).get("token"):
+            payload["llm"]["token"] = "***"
         return payload
 
     def merged(self, **overrides: Any) -> "Config":
@@ -463,12 +475,33 @@ def _coerce(value: Any, target_type: Any) -> Any:
     return text
 
 
-#: ``NAVEED_LLM_MODEL`` / ``OPENAI_API_KEY`` style environment names per field.
+#: ``NAVEED_LLM_MODEL`` / ``LLM_TOKEN`` style environment names per field.
 _ENV_PREFIX = "NAVEED_"
 _ENV_ALIASES: Dict[str, str] = {
-    "llm.api_key": "OPENAI_API_KEY",
-    "llm.base_url": "OPENAI_BASE_URL",
+    "llm.token": "LLM_TOKEN",
+    "llm.base_url": "LLM_API",
     "llm.model": "NAVEED_MODEL",
+}
+
+#: Older names, accepted so an existing config keeps working. Nothing documents
+#: them: Naveed is configured with an API, and a key is not a concept here.
+_LEGACY_ALIASES: Dict[str, str] = {
+    "llm.token": "OPENAI_API_KEY",
+    "llm.base_url": "OPENAI_BASE_URL",
+}
+
+#: Field names that are not literal field names: ``LLM_API=`` in config.env means
+#: the endpoint, ``LLM_KEY=`` the optional token, and so on.
+_FIELD_ALIASES: Dict[str, Dict[str, str]] = {
+    "llm": {
+        "api": "base_url",
+        "url": "base_url",
+        "endpoint": "base_url",
+        "key": "token",
+        "apikey": "token",
+        "api_key": "token",
+        "access_token": "token",
+    },
 }
 
 
@@ -485,6 +518,7 @@ def _apply_mapping(config: Config, values: Dict[str, str]) -> Config:
         if not dotted:
             continue
         section_name, _, field_name = dotted.partition(".")
+        field_name = _FIELD_ALIASES.get(section_name, {}).get(field_name, field_name)
         section = getattr(config, section_name, None)
         if section is None or not hasattr(section, field_name):
             continue
@@ -525,6 +559,9 @@ def load_config(
         for dotted, env_name in _ENV_ALIASES.items():
             if dotted not in env_values and os.environ.get(env_name):
                 env_values[dotted] = os.environ[env_name]
+        for dotted, env_name in _LEGACY_ALIASES.items():
+            if dotted not in env_values and os.environ.get(env_name):
+                env_values[dotted] = os.environ[env_name]
         _apply_mapping(config, env_values)
         if os.environ.get("NAVEED_PROVIDER"):
             _apply_preset(config, os.environ["NAVEED_PROVIDER"])
@@ -553,8 +590,9 @@ def _apply_preset(config: Config, name: str) -> Config:
 def write_env_file(config: Config, path: Optional[str] = None) -> str:
     """Write the current settings back out (used by the panel's settings sheet).
 
-    The API key is written verbatim so the file is a working configuration, and
-    the file is created with owner-only permissions where the OS supports it.
+    The LLM API (endpoint, model) is what makes the file a working configuration.
+    A token is written verbatim only when one is set, so the file is complete; it
+    is created with owner-only permissions where the OS supports it.
     """
     target = Path(path) if path else (Path(config.base_dir) / ENV_FILE_NAME)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -563,9 +601,9 @@ def write_env_file(config: Config, path: Optional[str] = None) -> str:
         "# Generated by Naveed. Edit by hand or from the panel's settings sheet.",
         f"# provider presets: {', '.join(sorted(PROVIDER_PRESETS))}",
         "",
-        "LLM_BASE_URL=" + config.llm.base_url,
-        "LLM_API_KEY=" + config.llm.api_key,
+        "LLM_API=" + config.llm.base_url,
         "LLM_MODEL=" + config.llm.model,
+        *(("LLM_TOKEN=" + config.llm.token,) if config.llm.token else ()),
         f"LLM_VISION={'true' if config.llm.vision else 'false'}",
         f"LLM_TEMPERATURE={config.llm.temperature}",
         f"LLM_MAX_TOKENS={config.llm.max_tokens}",

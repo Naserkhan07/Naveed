@@ -150,6 +150,45 @@ def work_item_url(config: Any, work_item_id: str) -> str:
     return f"{base}/polarion/#/project/{project}/workitem?id={identifier}" if project else f"{base}/polarion/#/workitem?id={identifier}"
 
 
+def api_status(config: Any) -> Dict[str, Any]:
+    """What the API fast path is set up to do. Never calls out, never raises."""
+    settings = _settings(config)
+    return {
+        "configured": api_configured(config),
+        "base_url": str(getattr(settings, "polarion_base_url", "") or ""),
+        "project": str(getattr(settings, "polarion_project", "") or ""),
+        "writes": api_writes_allowed(config),
+        "token_set": bool(str(getattr(settings, "polarion_token", "") or "")),
+    }
+
+
+def api_probe(config: Any, *, project: str = "") -> Tuple[bool, str]:
+    """Ask the configured Polarion API whether it answers, with one cheap GET.
+
+    Returns ``(ok, sentence)`` and never raises: this is what ``--polarion-check``
+    and the panel print, where a traceback would be less useful than the reason.
+    """
+    status = api_status(config)
+    if not status["configured"]:
+        return False, (
+            "Polarion's API is not configured, so Naveed drives the UI instead. To use the exact fast path, "
+            "set SKILLS_POLARION_BASE_URL and SKILLS_POLARION_PROJECT in ~/.naveed/config.env"
+            + ("" if status["token_set"] else " (and SKILLS_POLARION_TOKEN if your server needs one)")
+        )
+    project_name = project or status["project"]
+    if not project_name:
+        return False, "SKILLS_POLARION_PROJECT is empty, so there is no project to query"
+    path = _endpoint(config, "work_items", project=project_name)
+    try:
+        reply = polarion_request(config, f"{path}?query=&limit=1", timeout=15.0)
+    except RuntimeError as error:
+        return False, str(error)
+    except Exception as error:  # pragma: no cover - defensive: a probe never raises
+        return False, f"could not talk to Polarion: {error}"
+    items = _items(reply.get("data"))
+    return True, f"{status['base_url']} answered for project {project_name} ({len(items)} item(s) in the first page)"
+
+
 def polarion_request(
     config: Any,
     path: str,

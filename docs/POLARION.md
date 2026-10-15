@@ -58,18 +58,71 @@ load-bearing ones:
 
 ## 2. The API fast path (optional)
 
+Before trusting any of it, ask it:
+
+```bash
+python3 -m naveed --polarion-check
+```
+
+It prints what the fast path is set up to do — the API base URL, the default
+project, whether reads and writes are allowed — or the exact `SKILLS_POLARION_*`
+lines to add if nothing is configured, and then performs **one** cheap `GET`
+against the work-items endpoint to see whether the server is really there:
+
+```
+$ python3 -m naveed --polarion-check
+Polarion pack (Siemens Polarion ALM)
+  api         not configured — Naveed will drive the Polarion UI instead
+              to use the exact fast path, set in ~/.naveed/config.env:
+                SKILLS_POLARION_BASE_URL=https://polarion.example.com
+                SKILLS_POLARION_PROJECT=PROJ
+                SKILLS_POLARION_TOKEN=…          # if your server asks for one
+  ✗ api probe: Polarion's API is not configured, so Naveed drives the UI instead. To
+              use the exact fast path, set SKILLS_POLARION_BASE_URL and
+              SKILLS_POLARION_PROJECT in ~/.naveed/config.env (and
+              SKILLS_POLARION_TOKEN if your server needs one)
+
+  what it knows:   python -m naveed --skills
+  teach your own:  python -m naveed --train polarion-set-status
+  replay without the model:
+                   python -m naveed --run-recipe polarion-open-work-item --arg work_item_id=PROJ-1234
+```
+
+Once it *is* configured the same command confirms it, and the probe line turns
+into a ✓ — one `getWorkItems` call with `limit=1`, so it costs nothing and cannot
+change anything:
+
+```
+  api         configured at https://alm.example.com
+  project     PROJ
+  access      token set
+  api writes  OFF (SKILLS_ALLOW_API_WRITES=true enables them)
+  ✓ api probe: https://alm.example.com answered for project PROJ (1 item(s) in the
+              first page)
+```
+
+The probe never raises and never writes: a wrong token is reported as a wrong
+token (401/403), a wrong project as a wrong project (404), an unreachable server
+as an unreachable server. That is deliberate — the whole point of a fast-path
+check is to fail before the task does.
+
 If you give Naveed a base URL and a token, it stops clicking and uses the REST API
 for the things an API is better at: reading a work item, searching, and (only with
 explicit permission) patching fields.
 
 ```ini
-# ~/.naveed/config.env   (as an environment variable, prefix every key with NAVEED_)
+# ~/.naveed/config.env
 SKILLS_POLARION_BASE_URL=https://alm.example.com
-SKILLS_POLARION_TOKEN=<personal access token>
+SKILLS_POLARION_TOKEN=<personal access token>   # only if your server asks for one
 SKILLS_POLARION_PROJECT=PROJ           # default for bare ids like 1042
 SKILLS_ALLOW_API=true                  # reading (on by default)
 SKILLS_ALLOW_API_WRITES=false          # leave this off until you mean it
 ```
+
+The same five as environment variables are prefixed with `NAVEED_`
+(`NAVEED_SKILLS_POLARION_BASE_URL=… python3 -m naveed`), because an environment
+carries more than Naveed's own settings and a bare `SKILLS_ALLOW_API` in it would
+be a claim about the whole machine.
 
 Rules that are enforced, not documented-and-hoped:
 
@@ -122,11 +175,18 @@ That is what recording is for.
 
 ```bash
 # 1. watch me do it once (Ctrl+Alt+T starts and stops the recording)
-python3 -m naveed --teach release-my-item --teach-seconds 45 \
+python3 -m naveed --train release-my-item --skill polarion \
     --describe "verify a fix and move the item to Verified"
 
-# you do the task by hand, in Polarion, while Naveed records events
+# Naveed prints the pack's tips first (so you know what it already knows),
+# counts 3… 2… 1… — press Ctrl-C during the countdown to back out —
+# then records while you do the task by hand, in Polarion.
 ```
+
+`--train NAME` is `--teach NAME` with the Polarion-shaped conveniences: `--skill
+PACK` names the pack whose knowledge should be in front of the recording, and
+`--countdown SECONDS` (default 3) is the breathing room before recording starts.
+`--teach` still works and still starts recording immediately.
 
 Recording watches your real input, so it needs the input extra:
 

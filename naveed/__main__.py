@@ -7,6 +7,9 @@ Modes
 ``python -m naveed --prompt "open X"``    run one task headlessly
 ``python -m naveed --watch``              watch the screen, print a timeline
 ``python -m naveed --check``              report what is installed/possible
+``python -m naveed --serve``              the same bot in a browser, no GUI
+``python -m naveed --train NAME``         learn a task by demonstration (Polarion, or anything else)
+``python -m naveed --polarion-check``     is the Polarion API fast path working?
 ``python -m naveed --setup``              write ~/.naveed/config.env
 ``python -m naveed --listen``             record one voice command
 ``python -m naveed --say "text"``         speak through the offline voice
@@ -36,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", "-p", metavar="TEXT", help="run one task and exit (headless)")
     parser.add_argument("--watch", nargs="?", const=0.0, type=float, metavar="SECONDS", help="watch the screen and print what changes")
     parser.add_argument("--check", action="store_true", help="report the environment and capabilities")
-    parser.add_argument("--setup", action="store_true", help="write a config file (see --provider/--api-key)")
+    parser.add_argument("--setup", action="store_true", help="write a config file (see --provider/--api)")
     parser.add_argument("--portrait", nargs="?", const="naveed-portrait.png", metavar="PATH", help="render the mascot sheet + panel mock to a PNG")
     parser.add_argument("--listen", nargs="?", const=12.0, type=float, metavar="SECONDS", help="record one voice command and print the text")
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with the offline voice")
@@ -54,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     trained.add_argument("--skills", action="store_true", help="list the knowledge packs Naveed has been taught")
     trained.add_argument("--recipes", action="store_true", help="list every routine, with its arguments")
     trained.add_argument("--teach", metavar="NAME", help="learn a task by performing it once, then saving it as a routine")
+    trained.add_argument("--train", metavar="NAME", help="the same, with a countdown and the pack's own tips before it records")
+    trained.add_argument("--countdown", type=float, default=3.0, metavar="SECONDS", help="seconds to switch windows before --train records (default 3)")
+    trained.add_argument("--skill", metavar="PACK", help="print what this knowledge pack already knows before recording")
+    trained.add_argument("--polarion-check", action="store_true", help="is the Polarion API fast path configured, and is it answering?")
     trained.add_argument("--teach-seconds", type=float, default=0.0, metavar="SECONDS", help="stop recording after this long")
     trained.add_argument("--run-recipe", metavar="NAME", help="replay a recorded routine (no model needed)")
     trained.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE", help="argument for --run-recipe (repeatable)")
@@ -64,10 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--provider", metavar="NAME", help=f"setup preset ({', '.join(sorted(_presets()))})")
     parser.add_argument("--model", metavar="NAME", help="model name for the planner")
-    parser.add_argument("--api-key", metavar="KEY", help="API key (stored in ~/.naveed/config.env)")
+    parser.add_argument("--api", metavar="URL", help="the LLM API to use, e.g. http://127.0.0.1:11434/v1")
+    parser.add_argument("--token", metavar="TOKEN", help="only if that LLM API asks for one (optional, never required)")
     parser.add_argument("--voice", nargs="?", const="en_US-amy-medium", metavar="NAME", help="download a Piper voice during setup")
 
-    parser.add_argument("--base-url", metavar="URL", help="OpenAI-compatible endpoint")
+    parser.add_argument("--base-url", metavar="URL", help="the LLM API endpoint (same as --api)")
     parser.add_argument("--size", type=int, metavar="PX", help="mascot size in pixels")
     parser.add_argument("--interval", type=float, metavar="SECONDS", help="screen watching interval")
     parser.add_argument("--dry-run", action="store_true", help="plan and show actions without performing them")
@@ -116,8 +124,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["llm.base_url"] = args.base_url
     if args.model:
         overrides["llm.model"] = args.model
-    if args.api_key:
-        overrides["llm.api_key"] = args.api_key
+    if args.api:
+        overrides["llm.base_url"] = args.api
+    if args.token:
+        overrides["llm.token"] = args.token
     if args.size:
         overrides["overlay.size"] = args.size
     if args.interval is not None:
@@ -143,7 +153,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return app.setup(
             provider=args.provider or "",
             model=args.model or "",
-            api_key=args.api_key or "",
+            token=args.token or "",
             voice=args.voice or "",
             force=args.force,
         )
@@ -166,12 +176,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         return app.show_skills()
     if args.recipes:
         return app.show_recipes()
-    if args.teach:
+    if args.polarion_check:
+        return app.polarion_check()
+    if args.teach or args.train:
         return app.teach(
-            args.teach,
+            args.train or args.teach,
             description=args.describe or "",
             variables=_pairs(args.var),
             seconds=float(args.teach_seconds or 0.0),
+            countdown=float(args.countdown or 0.0) if args.train else 0.0,
+            skill=args.skill or "",
         )
     if args.run_recipe:
         return app.run_recipe(args.run_recipe, _pairs(args.arg))

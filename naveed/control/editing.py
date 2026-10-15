@@ -96,6 +96,36 @@ _OPERATION_ALIASES: Dict[str, str] = {
 }
 
 
+#: Ways a caller says "the thing I already have the keyboard focus in, do not
+#: click anything".  Editing *anywhere* has to include the case where the field
+#: cannot be named or seen clearly — a caret in a code editor, a rich-text box
+#: inside a dialog, a cell that was already open — and clicking a guessed point
+#: there is how you edit the wrong thing.
+FOCUSED_WORDS: Tuple[str, ...] = (
+    "",
+    "focused",
+    "focus",
+    "current",
+    "current field",
+    "this",
+    "this field",
+    "active",
+    "active field",
+    "selected",
+    "selection",
+    "cursor",
+    "here",
+)
+
+
+def is_focused_target(text: Any) -> bool:
+    """True when *text* means "whatever has focus", not a label to look for."""
+    if text is None:
+        return True
+    candidate = str(text).strip().lower().rstrip(":").replace("the ", "").strip()
+    return candidate in FOCUSED_WORDS or candidate.startswith("focused")
+
+
 @dataclass
 class EditRequest:
     """One edit, in the form a model (or a recipe) can produce."""
@@ -405,14 +435,28 @@ class FieldEditor:
         return None
 
     # --- the cycle ------------------------------------------------------
-    def read(self, point: Optional[Tuple[int, int]] = None, *, frame: Any = None, target: str = "") -> FieldReading:
-        """Click the field and copy its exact contents out of it."""
-        if point is None:
-            point = self.resolve_target(frame, target)
-        if point is None:
-            return FieldReading(error="I could not find the field to read")
+    def read(
+        self,
+        point: Optional[Tuple[int, int]] = None,
+        *,
+        frame: Any = None,
+        target: str = "",
+        focused: bool = False,
+    ) -> FieldReading:
+        """Copy the field's exact contents out of it.
 
-        self._click_target(*point)
+        With ``focused=True`` nothing is clicked: the text is taken from whatever
+        already has the keyboard focus, which is the only safe way to edit a caret
+        in an editor or a box that cannot be named.
+        """
+        if focused:
+            point = None
+        else:
+            if point is None:
+                point = self.resolve_target(frame, target)
+            if point is None:
+                return FieldReading(error="I could not find the field to read")
+            self._click_target(*point)
         self._sleep(0.05)
 
         sentinel = f"{SENTINEL}-{uuid.uuid4().hex[:8]}"
@@ -439,14 +483,24 @@ class FieldEditor:
             source="clipboard",
         )
 
-    def write(self, text: str, point: Optional[Tuple[int, int]] = None, *, frame: Any = None, target: str = "") -> Tuple[bool, str]:
+    def write(
+        self,
+        text: str,
+        point: Optional[Tuple[int, int]] = None,
+        *,
+        frame: Any = None,
+        target: str = "",
+        focused: bool = False,
+    ) -> Tuple[bool, str]:
         """Put *text* into the field and say which method was used."""
-        if point is None:
-            point = self.resolve_target(frame, target)
-        if point is None:
-            return False, ""
-
-        self._click_target(*point)
+        if focused:
+            point = None
+        else:
+            if point is None:
+                point = self.resolve_target(frame, target)
+            if point is None:
+                return False, ""
+            self._click_target(*point)
         self._sleep(0.05)
         self._select_all()
 
@@ -473,19 +527,22 @@ class FieldEditor:
         target: str = "",
         point: Optional[Tuple[int, int]] = None,
         verify: bool = True,
+        focused: bool = False,
     ) -> EditOutcome:
         """Read the field, apply *request*, write it back, verify, retry once."""
         request = request.normalised()
         outcome = EditOutcome(target=point)
-        resolved = self.resolve_target(frame, target, point)
-        if resolved is None:
-            outcome.message = "I could not find that field on the screen"
-            return outcome
-        outcome.target = resolved
+        resolved: Optional[Tuple[int, int]] = None
+        if not focused:
+            resolved = self.resolve_target(frame, target, point)
+            if resolved is None:
+                outcome.message = "I could not find that field on the screen"
+                return outcome
+            outcome.target = resolved
 
         for attempt in (1, 2):
             outcome.attempts = attempt
-            reading = self.read(resolved)
+            reading = self.read(resolved, focused=focused)
             if not reading.trustworthy:
                 outcome.message = reading.error or "I could not read the current value of that field"
                 return outcome
@@ -505,7 +562,7 @@ class FieldEditor:
                 outcome.message = "the field already said exactly that"
                 return outcome
 
-            written, method = self.write(updated, resolved)
+            written, method = self.write(updated, resolved, focused=focused)
             outcome.write_method = method
             if not written:
                 outcome.message = "I could not write into that field"
@@ -515,7 +572,7 @@ class FieldEditor:
                 outcome.message = "the field was updated (not verified)"
                 return outcome
 
-            check = self.read(resolved)
+            check = self.read(resolved, focused=focused)
             outcome.after = check.text
             if check.trustworthy and check.text == updated:
                 outcome.ok = True
@@ -525,7 +582,7 @@ class FieldEditor:
                 return outcome
 
             # A paste that did not take is worth one more try as typing.
-            if attempt == 1 and method == "paste":
+            if attempt == 1 and method == "paste" and not focused:
                 point_still_valid = self.resolve_target(frame, target, resolved)
                 if point_still_valid:
                     self._click_target(*point_still_valid)
@@ -546,8 +603,22 @@ class FieldEditor:
         return outcome
 
     # --- convenience used by the action handlers -------------------------
-    def replace_value(self, value: str, *, frame: Any = None, target: str = "", point: Optional[Tuple[int, int]] = None) -> EditOutcome:
-        return self.edit(EditRequest(operation=EditOperation.SET.value, value=value), frame=frame, target=target, point=point)
+    def replace_value(
+        self,
+        value: str,
+        *,
+        frame: Any = None,
+        target: str = "",
+        point: Optional[Tuple[int, int]] = None,
+        focused: bool = False,
+    ) -> EditOutcome:
+        return self.edit(
+            EditRequest(operation=EditOperation.SET.value, value=value),
+            frame=frame,
+            target=target,
+            point=point,
+            focused=focused,
+        )
 
 
 def looks_like_field_label(text: str) -> bool:

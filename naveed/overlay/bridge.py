@@ -255,7 +255,7 @@ class OverlayApp:
                 self.bridge.say(f"I am on screen, but my model is not answering — {reason} Open settings to fix it.")
         else:
             self.bridge.say(
-                "I am watching your screen, but I have no model yet — open settings and add a key or a local model."
+                "I am watching your screen, but I have no LLM API yet — open settings and point me at one."
             )
         self.panel.apply_state(self.bridge.status())
 

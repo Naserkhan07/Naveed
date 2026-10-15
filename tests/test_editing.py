@@ -25,6 +25,7 @@ from naveed.control.editing import (
     EditRequest,
     FieldEditor,
     apply_edit,
+    is_focused_target,
     looks_like_field_label,
     parse_edit_request,
 )
@@ -439,6 +440,130 @@ class ControllerIntegrationTests(unittest.TestCase):
     def test_a_hard_blocked_command_is_still_refused_in_a_field(self):
         result = self.perform({"type": "edit_field", "x": 1, "y": 2, "operation": "set", "value": "sudo rm -rf /"})
         self.assertTrue(result.blocked, result.message)
+
+
+class EditingAnywhereTests(unittest.TestCase):
+    """Editing has to reach the caret too, not only a field you can name.
+
+    "Edit anything anywhere" fails in exactly one situation if it can only act on a
+    discovered target: the text is right in front of the user — a caret in a code
+    editor, a rich-text box inside a dialog, a cell that was just opened — and
+    there is no label to search for. Clicking a guessed point there is how you
+    edit the wrong thing, so the editor can work on whatever has focus and click
+    nothing at all.
+    """
+
+    def test_the_focused_vocabulary_is_recognised(self):
+        for word in ("", None, "focused", "the focused field", "this field", "current", "cursor", "here", "selection"):
+            self.assertTrue(is_focused_target(word), word)
+
+    def test_a_real_label_is_not_mistaken_for_focus(self):
+        for label in ("Status", "Description", "Summary", "the Title field", "work item id"):
+            self.assertFalse(is_focused_target(label), label)
+
+    def test_read_from_focus_clicks_nothing(self):
+        editor, controller, field = make_editor("already open in an editor")
+        reading = editor.read(focused=True)
+        self.assertTrue(reading.trustworthy)
+        self.assertEqual(reading.text, "already open in an editor")
+        self.assertEqual(controller.clicks, [], "reading the focused field must not click anything")
+        self.assertEqual(controller.moves, [])
+
+    def test_read_from_focus_still_reports_a_field_that_ignores_copy(self):
+        editor, controller, field = make_editor("locked", copies=False)
+        reading = editor.read(focused=True)
+        self.assertFalse(reading.trustworthy)
+        self.assertIn("respond to copy", reading.error)
+        self.assertEqual(controller.clicks, [])
+
+    def test_edit_from_focus_changes_only_what_was_asked_and_verifies(self):
+        editor, controller, field = make_editor("A description with one typo in it")
+        outcome = editor.edit(
+            EditRequest(operation="replace", old="one typo", new="no typos"),
+            focused=True,
+        )
+        self.assertTrue(outcome.ok, outcome.message)
+        self.assertTrue(outcome.verified)
+        self.assertEqual(field.text, "A description with no typos in it")
+        self.assertEqual(controller.clicks, [], "the caret was already in place")
+
+    def test_edit_from_focus_reports_missing_text_honestly(self):
+        editor, controller, field = make_editor("nothing like that here")
+        outcome = editor.edit(EditRequest(operation="replace", old="absent", new="x"), focused=True)
+        self.assertFalse(outcome.ok)
+        self.assertIn("does not contain", outcome.message)
+        self.assertEqual(field.text, "nothing like that here")
+
+
+class FocusedTargetDecisionTests(unittest.TestCase):
+    """Which of the three ways to address a field wins."""
+
+    def setUp(self):
+        from naveed.config import load_config
+        from naveed.control.actions import normalize_action
+        from naveed.control.os_control import OsController
+
+        self.action = normalize_action
+        self.os = OsController(load_config(), input_controller=FakeController(FakeField("")))
+
+    def wants_focus(self, payload):
+        return self.os._wants_focused_field(self.action(payload), None)
+
+    def test_coordinates_win(self):
+        self.assertFalse(self.wants_focus({"type": "edit_field", "x": 10, "y": 20, "operation": "append", "value": "x"}))
+
+    def test_a_label_wins(self):
+        self.assertFalse(self.wants_focus({"type": "edit_field", "target": "Description", "operation": "append", "value": "x"}))
+
+    def test_nothing_means_the_focused_field(self):
+        self.assertTrue(self.wants_focus({"type": "edit_field", "operation": "append", "value": "x"}))
+        self.assertTrue(self.wants_focus({"type": "read_field"}))
+        self.assertTrue(self.wants_focus({"type": "read_field", "target": "focused"}))
+
+
+class FocusedActionTests(unittest.TestCase):
+    """The same thing, through the action layer the model actually calls."""
+
+    def setUp(self):
+        from naveed.config import load_config
+        from naveed.control.os_control import OsController
+
+        self.field = FakeField("the field the caret is in")
+        self.controller = FakeController(self.field)
+        self.os = OsController(load_config(), input_controller=self.controller)
+
+    def perform(self, payload):
+        from naveed.control.actions import normalize_action
+
+        return self.os.perform(normalize_action(payload))
+
+    def test_edit_field_without_a_target_edits_the_focused_field(self):
+        result = self.perform({"type": "edit_field", "operation": "append", "value": " plus more"})
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(self.field.text, "the field the caret is in plus more")
+        self.assertEqual(self.controller.clicks, [])
+
+    def test_read_field_without_a_target_reads_the_focused_field(self):
+        result = self.perform({"type": "read_field"})
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.payload["text"], "the field the caret is in")
+        self.assertEqual(self.controller.clicks, [])
+
+    def test_a_dry_run_says_which_field_it_would_touch(self):
+        from naveed.config import load_config
+        from naveed.control.os_control import OsController
+
+        config = load_config()
+        config.safety.dry_run = True
+        os_control = OsController(config, input_controller=self.controller)
+        result = os_control.perform(
+            __import__("naveed.control.actions", fromlist=["normalize_action"]).normalize_action(
+                {"type": "edit_field", "operation": "append", "value": "x"}
+            )
+        )
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("the focused field", result.message)
+        self.assertTrue(result.payload.get("dry_run"))
 
 
 if __name__ == "__main__":

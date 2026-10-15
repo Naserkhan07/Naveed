@@ -313,7 +313,7 @@ class ControlPanel:
 
                 texts = QtWidgets.QVBoxLayout()
                 texts.setSpacing(1)
-                facade._labels["connection"] = QtWidgets.QLabel("Offline — no key")
+                facade._labels["connection"] = QtWidgets.QLabel("Offline — no LLM API")
                 facade._labels["connection"].setObjectName("StatusStrong")
                 facade._labels["connection"].setStyleSheet(f"color: {PALETTE['offline']};")
                 facade._labels["model"] = QtWidgets.QLabel("no model")
@@ -376,6 +376,7 @@ class ControlPanel:
                     ("clean_up", "Clean up", "#FBBF24"),
                     ("translate", "Translate", "#60A5FA"),
                     ("automate", "Automate", "#F472B6"),
+                    ("edit", "Edit this", "#FCA5A5"),
                 ]
                 for index, (key, label, accent) in enumerate(keys):
                     button = QtWidgetsLocal.QPushButton(f"●  {label}")
@@ -463,7 +464,7 @@ class ControlPanel:
         connection = self._labels.get("connection")
         if connection is not None:
             ready = bool(state.get("model_ready"))
-            connection.setText("Connected" if ready else "Offline — no key")
+            connection.setText("Connected" if ready else "Offline — no LLM API")
             connection.setStyleSheet(f"color: {PALETTE['connected'] if ready else PALETTE['offline']};")
         model = self._labels.get("model")
         if model is not None:
@@ -665,13 +666,14 @@ class ControlPanel:
         provider_row = QtWidgets.QHBoxLayout()
         provider_row.addWidget(QtWidgets.QLabel("Provider"))
         provider = QtWidgets.QComboBox()
+        # The presets are *LLM APIs*: picking one fills in the URL and the model.
         provider.addItems(["custom", *sorted(PROVIDER_PRESETS)])
         provider.setCurrentText(_provider_key(self.config.llm.base_url))
         provider_row.addWidget(provider, 1)
         layout.addLayout(provider_row)
 
         base_row = QtWidgets.QHBoxLayout()
-        base_row.addWidget(QtWidgets.QLabel("Endpoint"))
+        base_row.addWidget(QtWidgets.QLabel("LLM API"))
         base_url = QtWidgets.QLineEdit(self.config.llm.base_url)
         base_row.addWidget(base_url, 1)
         layout.addLayout(base_row)
@@ -681,14 +683,6 @@ class ControlPanel:
         model = QtWidgets.QLineEdit(self.config.llm.model)
         model_row.addWidget(model, 1)
         layout.addLayout(model_row)
-
-        key_row = QtWidgets.QHBoxLayout()
-        key_row.addWidget(QtWidgets.QLabel("API key"))
-        api_key = QtWidgets.QLineEdit(self.config.llm.api_key)
-        api_key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-        api_key.setPlaceholderText("leave empty for a local model")
-        key_row.addWidget(api_key, 1)
-        layout.addLayout(key_row)
 
         size_row = QtWidgets.QHBoxLayout()
         size_row.addWidget(QtWidgets.QLabel("Mascot size"))
@@ -723,7 +717,6 @@ class ControlPanel:
                 {
                     "llm.base_url": base_url.text().strip(),
                     "llm.model": model.text().strip(),
-                    "llm.api_key": api_key.text().strip(),
                     "overlay.size": int(size.value()),
                     "overlay.always_on_top": bool(on_top.isChecked()),
                     "capture.interval": 2.0 if watch.isChecked() else 0.0,

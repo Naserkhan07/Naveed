@@ -36,6 +36,11 @@ ends drive **one** bot; see [The browser](#the-browser).
   `tidy up my desktop`. A small vision model looks at the screenshot Naveed just
   took and replies with **actions** — click, type, press, scroll, open — which
   Naveed performs on your real machine.
+- **Thinks with an LLM *API*, not a key.** The model is a URL and a model name —
+  `LLM_API` + `LLM_MODEL`, any OpenAI-compatible endpoint, with the default being a
+  local server that needs no credential at all. There is no key to find, paste or
+  rotate anywhere in Naveed; if a hosted gateway insists on an `Authorization`
+  header, that one optional `LLM_TOKEN` covers it.
 - **Shows up in your browser too, if a text box is handier.** `python -m naveed
   --serve` puts the same bot on `http://127.0.0.1:8765` — a live log of every
   action, a status card, the quick actions, and a box for answering its questions.
@@ -44,9 +49,12 @@ ends drive **one** bot; see [The browser](#the-browser).
 - **Verifies its own work.** After acting, Naveed waits for the screen to settle
   and compares before/after. If nothing changed, it knows the click did nothing,
   says so, and tries a different route instead of looping forever.
-- **Edits what is already there.** Not just typing into empty fields: it reads a
-  field's exact current value, changes only the part that needs changing, writes it
-  back, and reads it again to confirm. `append` a line to a description, `replace`
+- **Edits what is already there — anywhere.** Not just typing into empty fields: it
+  reads a field's exact current value, changes only the part that needs changing,
+  writes it back, and reads it again to confirm. It can aim at a labelled field, at
+  coordinates, **or at whatever you already have the keyboard focus in** (a caret in
+  a code editor, a rich-text box, a cell you just opened) without clicking anything
+  at all. `append` a line to a description, `replace`
   one word in a form, leave the rest of the text — and the formatting — alone.
 - **Learns a specific app from one demonstration.** Record yourself doing the task
   once (`Ctrl+Alt+T`), and Naveed distils it into a parameterised routine it can
@@ -64,7 +72,7 @@ ends drive **one** bot; see [The browser](#the-browser).
   numbers are never typed. `rm -rf /`-class commands are refused outright.
   Anything destructive gets a spoken *and* on-panel confirmation first.
 
-> **Status.** Everything in this repo runs and is tested (93 tests,
+> **Status.** Everything in this repo runs and is tested (317 tests,
 > `python -m unittest discover tests`). The GUI itself could not be *exercised* in
 > the environment it was built in — that sandbox has no display and no
 > `libGL.so.1`, so Qt cannot start there at all. That is exactly why the mascot's
@@ -108,17 +116,23 @@ pip install -e ".[ui,capture,input]"
 python -m naveed
 ```
 
-### 2. Give it a small model
+### 2. Give it an LLM API
 
-Naveed needs a *vision-capable* small model to decide what to click. Any
-OpenAI-compatible endpoint works, including one running on your own machine:
+Naveed does its thinking with a small vision model behind an ordinary
+OpenAI-compatible **API** — a URL and a model name. There is no key to manage: the
+default is a local server that needs none, which is also the setup where nothing
+leaves your machine.
 
 ```bash
-python -m naveed --setup --provider ollama      # local, no key, nothing leaves your PC
-python -m naveed --setup --provider openai      # gpt-4o-mini
-python -m naveed --setup --provider openrouter  # qwen2.5-vl-7b etc.
-python -m naveed --setup --provider groq        # lowest latency
+python -m naveed --setup --provider ollama      # local, default, nothing leaves your PC
+python -m naveed --setup --provider lmstudio    # local server with a GUI
+python -m naveed --api http://127.0.0.1:8080/v1 --model my-model   # anything else
+python -m naveed --setup --provider openai      # a hosted API (see --token below)
 ```
+
+A hosted gateway that *insists* on an `Authorization` header gets one from an
+optional `LLM_TOKEN` — it is never required, never asked for, and never needed for
+a local model.
 
 Settings land in `~/.naveed/config.env` — a plain text file, also editable from
 the panel's gear icon. See [`examples/config.env.example`](examples/config.env.example).
@@ -151,10 +165,13 @@ configured — a local server that is not running is the most common reason a ta
 dies, and it now says so up front:
 
 ```
-model       qwen2.5vl:7b @ 127.0.0.1:11434  ✓ configured
-            ✗ nothing is answering at http://127.0.0.1:11434/v1 (Connection refused)
-            start it, or pick another provider: python -m naveed --setup --provider openai
+llm api     qwen2.5vl:7b @ 127.0.0.1:11434  ✓ configured
+            ✓ answered: 3 model(s) offered, including qwen2.5vl:7b
 ```
+
+`--check` also *asks* the endpoint, so an address that nothing is listening on is
+reported as exactly that (with the command that fixes it) instead of looking
+configured and failing later.
 
 ---
 
@@ -218,6 +235,8 @@ python -m naveed --listen                 # record one voice command, print the 
 python -m naveed --say "hello there"      # speak through the offline voice
 python -m naveed --check                  # environment + capability report
 python -m naveed --setup --provider ollama --voice en_US-amy-medium
+python -m naveed --api http://127.0.0.1:1234/v1 --model qwen2.5-vl-7b-instruct   # any LLM API
+python -m naveed --train polarion-set-status    # learn one task by demonstration
 python -m naveed --portrait out.png       # render documentation/preview images
 python -m naveed --dry-run -p "delete my downloads"   # plan only, touch nothing
 python -m naveed --skills                 # what apps does it know something about?
@@ -304,7 +323,7 @@ Naveed operates your real computer, so this part is not an afterthought:
 
 | Rule | Behaviour |
 |---|---|
-| Secrets | Typing a password, PIN, 2FA code, API key or card number is **refused**, with a spoken explanation asking you to type it yourself. Typing your *email* into a login box is fine — only secrets are blocked. |
+| Secrets | Typing a password, PIN, 2FA code, card number or access token is **refused**, with a spoken explanation asking you to type it yourself. Typing your *email* into a login box is fine — only secrets are blocked. |
 | Unrecoverable commands | `rm -rf /`, `mkfs.*`, `dd of=/dev/sd*`, `reg delete HKLM`, fork bombs and friends are refused outright and are never confirmable. |
 | Destructive intent | delete / shutdown / purchase / send / overwrite and similar words in the action or the request raise the risk level and require confirmation — spoken *and* on the panel — with a timeout that **denies** when nobody answers. |
 | Shell | Off by default (`SAFETY_ALLOW_SHELL=false`), and allowlistable when on. |
@@ -353,20 +372,20 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 286 tests, no display required
+python -m unittest discover -s tests -v      # 317 tests, no display required
 ```
 
 | File | Covers |
 |---|---|
 | `tests/test_screen.py` | capture recovery chain, empty-frame detection, diff thresholds, monitor geometry + HiDPI, retention/pruning |
-| `tests/test_control.py` | action normalisation, key aliases/hotkeys, the safety guard, coordinate mapping, dry-run execution |
+| `tests/test_control.py` | action normalisation, key aliases/hotkeys, the safety guard (secrets in a payload, credential-labelled fields, reads included), coordinate mapping, dry-run execution |
 | `tests/test_agent.py` | the task loop: success, verification, no-change circuit breaker, asking, cancelling, budgets |
 | `tests/test_overlay.py` | the lazy-import promise (checked in a fresh interpreter), theme geometry, animation, icons, the Qt startup order, placement/remembered position, cross-thread callbacks |
 | `tests/test_launcher.py` | `main.py`: finding Naveed from any directory, the first-run hints, writing a config only when a model is reachable, passing flags through to the CLI |
 | `tests/test_server.py` | the browser front end: every endpoint, the page's relative-URL rule, the event log the page polls, the token rule for a non-loopback host, port fallback, and the overlay sharing one bridge with the browser |
 | `tests/test_visual.py` | pixel assertions on the generated art: palette, symmetry, expressions, transparency, previews |
-| `tests/test_editing.py` | the edit engine: `apply_edit` as a pure function (every operation, anchors that repeat or are missing), the clipboard read path, write-and-verify, honest failure on a locked field |
-| `tests/test_skills.py` | knowledge packs: matching and prompt-budget injection, recipe rendering and expansion, record → distil → replay, the Polarion REST tools with the network stubbed, config-file keys |
+| `tests/test_editing.py` | the edit engine: `apply_edit` as a pure function (every operation, anchors that repeat or are missing), the clipboard read path, focused-field editing (no click when the caret is already there), write-and-verify, honest failure on a locked field |
+| `tests/test_skills.py` | knowledge packs: matching and prompt-budget injection, recipe rendering and expansion, record → distil → replay, the Polarion REST tools with the network stubbed, the `--polarion-check` probe (configured? answering? wrong token? no project?), config-file keys |
 
 ## Project layout
 

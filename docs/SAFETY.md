@@ -42,7 +42,7 @@ than retry a different spelling.
 The rule that matters most in practice. Naveed refuses to type:
 
 * a password / passphrase / PIN / 2FA or one-time code / CVV / card number /
-  API key / private key — when it can see the *value*, or when the surrounding
+  access token / private key — when it can see the *value*, or when the surrounding
   request says that is what it is;
 * anything into a field labelled as a credential field when the value is a
   secret-shaped string.

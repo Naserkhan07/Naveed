@@ -54,6 +54,9 @@ ACTION_REFERENCE = """Actions (use only these "type" values):
   {"type":"edit_field","operation":"set|append|prepend|replace|remove|insert_after|insert_before|clear",
    "value":"<text>","old":"<text>","new":"<text>","marker":"<text>",   <- use the ones the operation needs
    "x":<int>,"y":<int>,"target":"<the field's visible label>"}          <- edit a field in place, verified
+  <- read_field and edit_field also work with NO x/y and NO target: then they act on whatever already has the
+     keyboard focus, without clicking anything. Use that when the caret is already in the right place (a code
+     editor, a rich-text box, a cell you just opened) or when the field has no label you could name.
   {"type":"select_all"}   {"type":"undo","times":1}   {"type":"save"}   {"type":"paste"}
   {"type":"find","text":"<text to search for>"}                    <- ctrl+f on the page
   {"type":"recipe","name":"<routine name>","args":{...}}           <- run a known routine, when one is listed below
