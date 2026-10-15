@@ -26,9 +26,16 @@ hosted gateway that insists on an `Authorization` header reads an optional
   including one you host yourself, without a preset.
 * The settings panel lost its key field; the status line reads `llm api
   <model> @ <host>`, and `--check` asks the endpoint whether it answers.
-* `examples/config.env.example`, `README.md`, `docs/TROUBLESHOOTING.md` and
-  `docs/SAFETY.md` were re-worded to match. A test loads the shipped example and
-  fails if it names a setting that does not exist.
+* `examples/config.env.example`, `README.md`, `docs/TROUBLESHOOTING.md`,
+  `docs/SAFETY.md`, `docs/ACTIONS.md` and `docs/EDITING.md` were re-worded to
+  match. A test loads the shipped example and fails if it names a setting that
+  does not exist.
+* **The installers were the last place still asking for a key.** `install.sh` and
+  `install.ps1` wrote a starter config for a hosted provider and then told you to
+  "paste your model key" — text nobody was testing, in the one message every new
+  user reads. They now write the local default and say plainly that there is no
+  key, with `--api`/`--setup --provider` for anything else. `tests/test_launcher.py`
+  asserts the wording, so it cannot drift again.
 
 ### Added — editing what is already there
 

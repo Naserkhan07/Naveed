@@ -49,15 +49,23 @@ if [ "$ASK_ALL" = "1" ]; then
 fi
 
 echo "  writing a starter configuration…"
-"$NAVEED" --setup --force --provider openai >/dev/null 2>&1 || true
+"$NAVEED" --setup --force >/dev/null 2>&1 || true
 
 echo
 echo "Done. Start the companion with:"
 echo "  $NAVEED"
 echo
-echo "Then open the panel's settings (the gear icon) and paste your model key,"
-echo "or point Naveed at a local model:"
-echo "  $NAVEED --setup --force --provider ollama"
+echo "Naveed thinks with an LLM *API*: a URL and a model name. There is no key to"
+echo "paste anywhere — the starter config points at a local Ollama on this machine:"
+echo
+echo "  ollama serve && ollama pull qwen2.5vl:7b      # the local default, nothing"
+echo "                                                # leaves your PC"
+echo
+echo "Any other OpenAI-compatible API works too:"
+echo "  $NAVEED --api http://127.0.0.1:1234/v1 --model qwen2.5-vl-7b-instruct"
+echo "  $NAVEED --setup --provider openai     # a hosted one (LLM_TOKEN covers the"
+echo "                                        # rare gateway that insists)"
+echo "  $NAVEED --setup --provider ollama     # local, free, no token at all"
 echo
 echo "Prefer a text box, or no window at all? The same bot runs in your browser:"
 echo "  $NAVEED --serve                    # http://127.0.0.1:8765 (no PySide6 needed)"

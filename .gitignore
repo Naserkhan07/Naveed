@@ -8,7 +8,7 @@ dist/
 .venv/
 venv/
 
-# Naveed's own runtime data (never commit a user's screenshots or API keys)
+# Naveed's own runtime data (never commit a user's screenshots or secrets)
 .naveed/
 config.env
 *.log

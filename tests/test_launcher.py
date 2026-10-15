@@ -58,6 +58,41 @@ class PackagingTests(unittest.TestCase):
             module = importlib.import_module(module_name)
             self.assertTrue(callable(getattr(module, attribute)), target)
 
+    def test_the_installers_do_not_ask_for_a_key(self):
+        """The first thing a new user reads must not mention an API key.
+
+        This is not hypothetical drift: the installers kept saying "paste your
+        model key" long after Naveed had stopped having such a thing, because
+        nothing checked the *text* a person actually reads. A wording test is the
+        only thing that notices.
+        """
+        for name in ("scripts/install.sh", "scripts/install.ps1"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            lowered = text.lower()
+            for phrase in ("model key", "api key", "api_key", "apikey"):
+                self.assertNotIn(phrase, lowered, f"{name} still asks for a {phrase}")
+            self.assertNotIn(
+                "--setup --force --provider", text,
+                f"{name} writes a starter config for a provider that may want a key",
+            )
+            self.assertIn("--setup --force", text, f"{name} must still write a starter config")
+            self.assertIn("no key", lowered, f"{name} should say outright that there is none")
+            self.assertIn("llm", lowered, f"{name} should talk about the LLM API")
+
+    def test_the_shipped_example_names_an_llm_api_and_no_key(self):
+        text = (ROOT / "examples" / "config.env.example").read_text(encoding="utf-8")
+        active = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertTrue(any(line.startswith("LLM_API=") for line in active), active)
+        self.assertTrue(any(line.startswith("LLM_MODEL=") for line in active), active)
+        for line in active:
+            name = line.split("=", 1)[0].strip().upper()
+            for banned in ("API_KEY", "APIKEY", "LLM_KEY", "OPENAI_KEY"):
+                self.assertNotIn(banned, name, f"a credential setting survived in {line!r}")
+        self.assertTrue(
+            all(not line.startswith("LLM_TOKEN=") for line in active),
+            "the token line must stay commented out: it is optional, and never asked for",
+        )
+
     def test_the_versions_agree(self):
         import tomllib
 

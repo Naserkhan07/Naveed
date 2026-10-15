@@ -36,15 +36,23 @@ if ($All) {
 }
 
 Write-Host "  writing a starter configuration..."
-& $naveedBin --setup --force --provider openai | Out-Null
+& $naveedBin --setup --force | Out-Null
 
 Write-Host ""
 Write-Host "Done. Start the companion with:"
 Write-Host "  $naveedBin"
 Write-Host ""
-Write-Host "Then open the panel's settings (the gear icon) and paste your model key,"
-Write-Host "or point Naveed at a local model:"
-Write-Host "  $naveedBin --setup --force --provider ollama"
+Write-Host "Naveed thinks with an LLM *API*: a URL and a model name. There is no key to"
+Write-Host "paste anywhere - the starter config points at a local Ollama on this machine:"
+Write-Host ""
+Write-Host "  ollama serve   # then: ollama pull qwen2.5vl:7b     (the local default;"
+Write-Host "                                                      nothing leaves your PC)"
+Write-Host ""
+Write-Host "Any other OpenAI-compatible API works too:"
+Write-Host "  $naveedBin --api http://127.0.0.1:1234/v1 --model qwen2.5-vl-7b-instruct"
+Write-Host "  $naveedBin --setup --provider openai   # a hosted one (LLM_TOKEN covers the"
+Write-Host "                                         # rare gateway that insists)"
+Write-Host "  $naveedBin --setup --provider ollama   # local, free, no token at all"
 Write-Host ""
 Write-Host "Prefer a text box, or no window at all? The same bot runs in your browser:"
 Write-Host "  $naveedBin --serve                 # http://127.0.0.1:8765 (no PySide6 needed)"

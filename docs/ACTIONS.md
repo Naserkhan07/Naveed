@@ -136,7 +136,7 @@ guessing coordinates is worse than an honest error.
 1. Look at the screenshot; describe what you see before deciding.
 2. Prefer direct routes — `open_url`, `open_app`, `hotkey` — over hunting for a
    browser icon with the mouse.
-3. Never type secrets (passwords, one-time codes, keys, card numbers).
+3. Never type secrets (passwords, one-time codes, access tokens, card numbers).
 4. Never emit shell commands.
 5. At most 4 actions per step.
 6. Coordinates are pixels in the shown image; name the element in `note`.

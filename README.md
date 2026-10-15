@@ -72,7 +72,7 @@ ends drive **one** bot; see [The browser](#the-browser).
   numbers are never typed. `rm -rf /`-class commands are refused outright.
   Anything destructive gets a spoken *and* on-panel confirmation first.
 
-> **Status.** Everything in this repo runs and is tested (317 tests,
+> **Status.** Everything in this repo runs and is tested (319 tests,
 > `python -m unittest discover tests`). The GUI itself could not be *exercised* in
 > the environment it was built in — that sandbox has no display and no
 > `libGL.so.1`, so Qt cannot start there at all. That is exactly why the mascot's
@@ -372,7 +372,7 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 317 tests, no display required
+python -m unittest discover -s tests -v      # 319 tests, no display required
 ```
 
 | File | Covers |
@@ -381,7 +381,7 @@ python -m unittest discover -s tests -v      # 317 tests, no display required
 | `tests/test_control.py` | action normalisation, key aliases/hotkeys, the safety guard (secrets in a payload, credential-labelled fields, reads included), coordinate mapping, dry-run execution |
 | `tests/test_agent.py` | the task loop: success, verification, no-change circuit breaker, asking, cancelling, budgets |
 | `tests/test_overlay.py` | the lazy-import promise (checked in a fresh interpreter), theme geometry, animation, icons, the Qt startup order, placement/remembered position, cross-thread callbacks |
-| `tests/test_launcher.py` | `main.py`: finding Naveed from any directory, the first-run hints, writing a config only when a model is reachable, passing flags through to the CLI |
+| `tests/test_launcher.py` | `main.py`: finding Naveed from any directory, the first-run hints, writing a config only when an LLM API is reachable, passing flags through to the CLI, and the packaging promises (sub-packages listed, console scripts callable, versions agreeing, **the installers never asking for a key**) |
 | `tests/test_server.py` | the browser front end: every endpoint, the page's relative-URL rule, the event log the page polls, the token rule for a non-loopback host, port fallback, and the overlay sharing one bridge with the browser |
 | `tests/test_visual.py` | pixel assertions on the generated art: palette, symmetry, expressions, transparency, previews |
 | `tests/test_editing.py` | the edit engine: `apply_edit` as a pure function (every operation, anchors that repeat or are missing), the clipboard read path, focused-field editing (no click when the caret is already there), write-and-verify, honest failure on a locked field |
