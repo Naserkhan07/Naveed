@@ -50,6 +50,14 @@ ACTION_REFERENCE = """Actions (use only these "type" values):
   {"type":"focus_window","title":"<part of a window title>"}
   {"type":"clipboard_get"}
   {"type":"clipboard_set","text":"<text>"}
+  {"type":"read_field","x":<int>,"y":<int>}                       <- exact current text of a field
+  {"type":"edit_field","operation":"set|append|prepend|replace|remove|insert_after|insert_before|clear",
+   "value":"<text>","old":"<text>","new":"<text>","marker":"<text>",   <- use the ones the operation needs
+   "x":<int>,"y":<int>,"target":"<the field's visible label>"}          <- edit a field in place, verified
+  {"type":"select_all"}   {"type":"undo","times":1}   {"type":"save"}   {"type":"paste"}
+  {"type":"find","text":"<text to search for>"}                    <- ctrl+f on the page
+  {"type":"recipe","name":"<routine name>","args":{...}}           <- run a known routine, when one is listed below
+  {"type":"skill_tool","skill":"<pack>","tool":"<tool>","args":{...}}  <- a direct API call, when one is listed
   {"type":"look","note":"I need a fresh screenshot to see what happened"}
   {"type":"ask","question":"<a question for the user>"}
   {"type":"done","summary":"<what you accomplished, one sentence>"}"""
@@ -77,7 +85,11 @@ Rules that matter most:
 7. NEVER type passwords, card numbers, API keys, one-time codes or any secret. If the task needs credentials, return ask and tell the user to type it themselves.
 8. NEVER run shell commands. If a task needs one, explain in `ask` that shell access is switched off.
 9. If the previous attempt produced no visible change, do not repeat it. Choose a different element or approach, or ask.
-10. Read the screen carefully: button labels, field names, error messages and menu items are your ground truth. Do not invent UI that is not in the image."""
+10. Read the screen carefully: button labels, field names, error messages and menu items are your ground truth. Do not invent UI that is not in the image.
+11. TO CHANGE TEXT THAT ALREADY EXISTS, use read_field and then edit_field. Never retype a whole field to change part of it — `set` deletes everything else. Prefer `replace` with old/new for one value, `append` to add to the end.
+12. edit_field proves its own work: it reads the field back and tells you if the value did not stick. If it fails, the edit did not happen. Say so instead of assuming success.
+13. If a field ignores your typing it is probably read-only or locked by a workflow. Report that; do not try the same field three times.
+14. If the notes below list a tool for what you need, `skill_tool` is more reliable than clicking. If they list a routine (`recipe`) that matches the request, call it with the arguments it needs."""
 
 PLANNER_EXAMPLE = """Example 1
 User: open youtube and search for lo-fi beats

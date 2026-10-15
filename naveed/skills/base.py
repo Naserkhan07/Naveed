@@ -56,9 +56,14 @@ __all__ = [
 
 #: A parameter reference inside a recipe step, e.g. ``"{{title}}"``.
 PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
-#: How much skill text may be injected into one prompt. Small models do worse
-#: with a long prompt, so the knowledge section is capped and truncated whole.
-CONTEXT_BUDGET = 2600
+#: How much skill text may be injected into one prompt. Small models do worse with
+#: a long prompt, and the screenshots already cost more than this does.
+CONTEXT_BUDGET = 3600
+#: Share of a skill's budget reserved for the *facts* (so that a pack with a lot of
+#: procedural detail cannot crowd out the things that are true about the app).
+FACTS_SHARE = 0.26
+#: And a ceiling for each actionable section, in characters.
+SECTION_CAPS = {"shortcuts": 470, "gotchas": 360, "editing": 360, "tools": 700, "routines": 440}
 
 
 def substitute(value: Any, arguments: Dict[str, Any]) -> Any:
@@ -648,51 +653,103 @@ def build_skill_context(
 ) -> str:
     """The block injected into the planner prompt for the matched skills.
 
-    Kept tight on purpose: facts, the shortcuts worth using, the traps, the
-    editing route, and the exact JSON for any recipe or tool that is actually
-    available. A 7B model reads the last two lines of a long prompt and nothing
-    else, so everything here has to earn its place.
+    Ordered by usefulness, and that order is the whole point: a 7B model reads
+    the start of a long prompt and the last couple of lines, and skips the middle.
+    So the **actionable** sections — shortcuts, the traps, the editing route, and
+    the exact JSON for any recipe or tool that is available — are protected by the
+    budget, and the prose facts are what gets trimmed when space runs short.
+
+    (That was a real bug, not a hypothetical: the Polarion facts alone filled the
+    budget, so the model never saw the shortcuts or the routines, which are the
+    parts that make it competent in that app rather than merely informed.)
     """
     if not matches:
         return ""
+    budget = max(400, int(budget))
+    per_skill_budget = max(320, budget // len(matches))
     sections: List[str] = []
+
     for result in matches:
         skill = result.skill
-        lines: List[str] = [f"=== YOU ARE WORKING IN {skill.name.upper()} ({result.reason}) ==="]
+        head: List[str] = [f"=== YOU ARE WORKING IN {skill.name.upper()} ({result.reason}) ==="]
         if skill.summary:
-            lines.append(skill.summary)
-        if skill.knowledge:
-            lines.append("FACTS:")
-            lines.extend(f"- {fact}" for fact in skill.knowledge)
+            head.append(skill.summary)
+
+        # --- what to do (kept) ------------------------------------------
+        actionable: List[str] = []
         if skill.shortcuts:
-            pairs = ", ".join(f"{name}: {chord}" for name, chord in list(skill.shortcuts.items())[:12])
-            lines.append(f"SHORTCUTS (use a hotkey action, not the menu): {pairs}")
-        if skill.glossary:
-            pairs = "; ".join(f"{term} = {meaning}" for term, meaning in list(skill.glossary.items())[:10])
-            lines.append(f"TERMS: {pairs}")
+            lines = ["SHORTCUTS (use a hotkey action rather than hunting through menus):"]
+            lines.extend(f"- {name}: {chord}" for name, chord in list(skill.shortcuts.items())[:12])
+            actionable.append(_truncate_lines("\n".join(lines), SECTION_CAPS["shortcuts"]))
         if skill.gotchas:
-            lines.append("WATCH OUT:")
-            lines.extend(f"- {gotcha}" for gotcha in skill.gotchas)
+            block_lines = ["WATCH OUT:", *(f"- {gotcha}" for gotcha in skill.gotchas[:6])]
+            actionable.append(_truncate_lines("\n".join(block_lines), SECTION_CAPS["gotchas"]))
         if skill.editing_tips:
-            lines.append("EDITING THIS APP:")
-            lines.extend(f"- {tip}" for tip in skill.editing_tips)
+            block_lines = ["EDITING THIS APP:", *(f"- {tip}" for tip in skill.editing_tips[:5])]
+            actionable.append(_truncate_lines("\n".join(block_lines), SECTION_CAPS["editing"]))
 
         available_tools = [tool for tool in skill.tools if tool.is_available(config)]
         if available_tools:
-            lines.append("DIRECT TOOLS (exact, fast — prefer these when they fit the request):")
+            lines = ["DIRECT TOOLS (exact, fast — prefer these when they fit the request):"]
             for tool in available_tools[:6]:
                 schema = ", ".join('"%s": "..."' % name for name in tool.params)
                 lines.append(
                     f'- {{"type":"skill_tool","skill":"{skill.id}","tool":"{tool.name}",'
                     f'"args":{{{schema}}}}} — {tool.description}'
                 )
+            actionable.append(_truncate_lines("\n".join(lines), SECTION_CAPS["tools"]))
         if skill.recipes:
-            lines.append("KNOWN ROUTINES (send {\"type\":\"recipe\",\"name\":...,\"args\":{...}} to run one):")
+            lines = ['KNOWN ROUTINES (send {"type":"recipe","name":...,"args":{...}} to run one):']
             for recipe in skill.recipes[:8]:
-                lines.append(f'- "{recipe.name}" — {recipe.description or "recorded earlier"}; args: {", ".join(recipe.params) or "none"}')
-        sections.append("\n".join(lines))
+                arguments = ", ".join(recipe.params) or "none"
+                lines.append(f'- "{recipe.name}" — {recipe.description or "recorded earlier"}; args: {arguments}')
+            actionable.append(_truncate_lines("\n".join(lines), SECTION_CAPS["routines"]))
 
-    block = "\n\n".join(sections)
-    if len(block) > budget:
-        block = block[:budget].rsplit("\n", 1)[0] + "\n…(more notes omitted)"
-    return block
+        # --- what is true (trimmed first) -------------------------------
+        facts: List[str] = []
+        if skill.knowledge:
+            facts.append("FACTS:")
+            facts.extend(f"- {fact}" for fact in skill.knowledge)
+        if skill.glossary:
+            pairs = "; ".join(f"{term} = {meaning}" for term, meaning in list(skill.glossary.items())[:10])
+            facts.append(f"TERMS: {pairs}")
+
+        header = "\n".join(head)
+        tail = "\n".join(actionable)
+        facts_text = "\n".join(facts)
+        # Facts get a guaranteed share; the actionable sections get theirs. Neither
+        # is allowed to squeeze the other out entirely.
+        room = min(int(per_skill_budget * FACTS_SHARE), max(0, per_skill_budget - len(header) - 40))
+        facts_text = _truncate_lines(facts_text, room) if room > 120 else ""
+        block = "\n".join(part for part in (header, facts_text, tail) if part)
+        if len(block) > per_skill_budget:
+            # Only now is the actionable text touched, and the cut is announced so
+            # the model knows that something was withheld.
+            block = _truncate_lines(block, max(200, per_skill_budget - 30)) + "\n…(more notes omitted)"
+        sections.append(block)
+
+    return "\n\n".join(sections)
+
+
+def _truncate_lines(text: str, limit: int) -> str:
+    """Trim *text* to at most *limit* characters, on a line boundary.
+
+    A single line longer than the limit is cut with an ellipsis rather than
+    dropped — an early version discarded whole sections this way, which quietly
+    removed the shortcuts from the prompt.
+    """
+    if limit <= 0 or not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    kept: List[str] = []
+    used = 0
+    for line in text.splitlines():
+        if used + len(line) + 1 > limit:
+            room = limit - used
+            if room > 20:
+                kept.append(line[: room - 1] + "…")
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept)

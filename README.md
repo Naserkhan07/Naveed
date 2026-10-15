@@ -34,6 +34,15 @@ what it did.
 - **Verifies its own work.** After acting, Naveed waits for the screen to settle
   and compares before/after. If nothing changed, it knows the click did nothing,
   says so, and tries a different route instead of looping forever.
+- **Edits what is already there.** Not just typing into empty fields: it reads a
+  field's exact current value, changes only the part that needs changing, writes it
+  back, and reads it again to confirm. `append` a line to a description, `replace`
+  one word in a form, leave the rest of the text — and the formatting — alone.
+- **Learns a specific app from one demonstration.** Record yourself doing the task
+  once (`Ctrl+Alt+T`), and Naveed distils it into a parameterised routine it can
+  replay exactly, with no model in the loop. Polarion ALM ships with knowledge of
+  its workflow; the routines are yours. (It does not fine-tune a model — see
+  [`docs/POLARION.md`](docs/POLARION.md).)
 - **Talks and listens, offline.** Click the mascot → it listens (Whisper or Vosk,
   locally) → it speaks back (Piper or your OS voice, locally). The mouth moves in
   time with its own speech.
@@ -151,7 +160,16 @@ python -m naveed --check                  # environment + capability report
 python -m naveed --setup --provider ollama --voice en_US-amy-medium
 python -m naveed --portrait out.png       # render documentation/preview images
 python -m naveed --dry-run -p "delete my downloads"   # plan only, touch nothing
+python -m naveed --skills                 # what apps does it know something about?
+python -m naveed --recipes                # what routines has it learned, and their arguments?
+python -m naveed --teach release-my-item --teach-seconds 45   # learn one by demonstration
+python -m naveed --run-recipe release-my-item --arg work_item_id=PROJ-1042 --dry-run
 ```
+
+Two guides go with those flags:
+[`docs/EDITING.md`](docs/EDITING.md) for changing text that is already on screen,
+and [`docs/POLARION.md`](docs/POLARION.md) for the Polarion pack and how training
+by demonstration works (and what it deliberately is not).
 
 ---
 
@@ -272,7 +290,7 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 93 tests, no display required
+python -m unittest discover -s tests -v      # 213 tests, no display required
 ```
 
 | File | Covers |
@@ -282,6 +300,8 @@ python -m unittest discover -s tests -v      # 93 tests, no display required
 | `tests/test_agent.py` | the task loop: success, verification, no-change circuit breaker, asking, cancelling, budgets |
 | `tests/test_overlay.py` | the lazy-import promise (checked in a fresh interpreter), theme geometry, animation, icons |
 | `tests/test_visual.py` | pixel assertions on the generated art: palette, symmetry, expressions, transparency, previews |
+| `tests/test_editing.py` | the edit engine: `apply_edit` as a pure function (every operation, anchors that repeat or are missing), the clipboard read path, write-and-verify, honest failure on a locked field |
+| `tests/test_skills.py` | knowledge packs: matching and prompt-budget injection, recipe rendering and expansion, record → distil → replay, the Polarion REST tools with the network stubbed, config-file keys |
 
 ## Project layout
 
@@ -296,7 +316,8 @@ naveed/
   overlay/           mascot geometry, theme, window, panel, tray, hotkeys, icons, Qt bridge
   speech/            audio helpers, offline STT, offline TTS, voice loop
   render/            canvas protocol + Pillow and Qt back-ends, previews
-docs/                architecture, screen watching, actions, safety, troubleshooting
+  skills/            knowledge packs, the Polarion pack, the recorder/distiller, learned routines
+docs/                architecture, screen watching, actions, safety, editing, Polarion, troubleshooting
 scripts/             install.sh, install.ps1
 tests/               the suite above
 examples/            a fully commented config.env

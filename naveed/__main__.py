@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import __version__
 
@@ -40,6 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--listen", nargs="?", const=12.0, type=float, metavar="SECONDS", help="record one voice command and print the text")
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with the offline voice")
     parser.add_argument("--screenshot", action="store_true", help="take one screenshot and print the path")
+
+    trained = parser.add_argument_group("taught knowledge (Polarion and friends)")
+    trained.add_argument("--skills", action="store_true", help="list the knowledge packs Naveed has been taught")
+    trained.add_argument("--recipes", action="store_true", help="list every routine, with its arguments")
+    trained.add_argument("--teach", metavar="NAME", help="learn a task by performing it once, then saving it as a routine")
+    trained.add_argument("--teach-seconds", type=float, default=0.0, metavar="SECONDS", help="stop recording after this long")
+    trained.add_argument("--run-recipe", metavar="NAME", help="replay a recorded routine (no model needed)")
+    trained.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE", help="argument for --run-recipe (repeatable)")
+    trained.add_argument("--var", action="append", default=[], metavar="TEXT=NAME", help="turn a recorded value into a parameter (repeatable)")
+    trained.add_argument("--describe", metavar="TEXT", help="description to store with a taught routine")
+    trained.add_argument("--export-training", metavar="PATH", help="write recorded steps as JSONL for a training run")
+    trained.add_argument("--no-skills", action="store_true", help="ignore knowledge packs for this run")
 
     parser.add_argument("--provider", metavar="NAME", help=f"setup preset ({', '.join(sorted(_presets()))})")
     parser.add_argument("--model", metavar="NAME", help="model name for the planner")
@@ -61,6 +73,22 @@ def _presets():
     from .config import PROVIDER_PRESETS
 
     return PROVIDER_PRESETS
+
+
+def _pairs(items: List[str]) -> Dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` / ``TEXT=NAME`` flags.
+
+    ``--arg status=Verified`` and ``--var "PROJ-1042=work_item_id"``. An item with
+    no ``=`` is ignored rather than guessed at, and a trailing ``=`` means "drop
+    this one" (used by ``--var`` to reject a parameter suggestion).
+    """
+    parsed: Dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            continue
+        key, _, value = item.partition("=")
+        parsed[key.strip()] = value.strip()
+    return parsed
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -87,6 +115,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["capture.interval"] = args.interval
     if args.dry_run:
         overrides["safety.dry_run"] = True
+    if getattr(args, "no_skills", False):
+        overrides["skills.inject"] = False
     if args.allow_shell:
         overrides["safety.allow_shell"] = True
     if args.debug:
@@ -121,6 +151,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         return app.screenshot()
     if args.watch is not None:
         return app.run_watch(seconds=float(args.watch))
+    if args.skills:
+        return app.show_skills()
+    if args.recipes:
+        return app.show_recipes()
+    if args.teach:
+        return app.teach(
+            args.teach,
+            description=args.describe or "",
+            variables=_pairs(args.var),
+            seconds=float(args.teach_seconds or 0.0),
+        )
+    if args.run_recipe:
+        return app.run_recipe(args.run_recipe, _pairs(args.arg))
+    if args.export_training:
+        return app.export_training(args.export_training)
     if args.prompt:
         return app.run_task(args.prompt)
     return app.run_overlay()

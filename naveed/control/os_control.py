@@ -368,6 +368,9 @@ class OsController:
     def _do_read_field(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
         """Read a field's *exact* current text (click, select all, copy)."""
         editor = self._field_editor()
+        if self.config.safety.dry_run:
+            where = action.get("target") or action.get("element") or "the field"
+            return f"would read {where}", {"dry_run": True}
         point = self.global_point(action, frame) or self._resolve_target_point(action, frame)
         reading = editor.read(point, frame=frame, target=str(action.get("target") or ""))
         if not reading.trustworthy:
@@ -385,6 +388,13 @@ class OsController:
         editor = self._field_editor()
         request = parse_edit_request(action.params)
         request.note = action.note or request.note
+        if self.config.safety.dry_run:
+            # A dry run must not need the live screen: saying "would have" is the
+            # whole point, and failing to find a field that is not being touched
+            # would make --dry-run useless for exactly the routine you want to
+            # review before letting it loose.
+            where = action.get("target") or action.get("element") or "the field"
+            return f"would edit {where}: {request.describe()}", {"dry_run": True}
         point = self.global_point(action, frame)
         outcome = editor.edit(
             request,

@@ -16,6 +16,7 @@ settings sheet.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -237,7 +238,7 @@ class SkillsSettings:
     enabled: bool = True
     directory: str = ""              # "" -> ~/.naveed/skills
     inject: bool = True              # put matched knowledge into the prompt
-    max_context_chars: int = 2600    # budget for that knowledge
+    max_context_chars: int = 3600    # budget for that knowledge (characters)
     teach_hotkey: str = "ctrl+alt+t"
 
     # --- the API fast path (off until configured) ------------------------
@@ -309,7 +310,14 @@ class Config:
         return payload
 
     def merged(self, **overrides: Any) -> "Config":
-        """Return a copy with dotted-path overrides applied (``llm.model=...``)."""
+        """Return a copy with dotted-path overrides applied (``llm.model=...``).
+
+        The sections are *replaced*, not mutated. ``dataclasses.replace`` is a
+        shallow copy, so an earlier version set the field on a section object the
+        caller still shared: `--dry-run` (and the panel's checkbox, and a recipe
+        rehearsal) turned dry-run on in the live config for the rest of the
+        session. Overriding one field must never reach back into the original.
+        """
         clone = replace(self)
         for dotted, value in overrides.items():
             if value is None:
@@ -325,7 +333,10 @@ class Config:
                 coerced = _coerce(value, type(current))
             except (TypeError, ValueError):
                 coerced = value
-            setattr(section, field_name, coerced)
+            if hasattr(section, "__dataclass_fields__"):
+                setattr(clone, section_name, replace(section, **{field_name: coerced}))
+            else:
+                setattr(section, field_name, coerced)
         return clone
 
 
@@ -342,11 +353,35 @@ def config_paths() -> List[Path]:
     return paths
 
 
+def _strip_inline_comment(value: str) -> str:
+    """Drop a trailing ``# comment`` from a value.
+
+    The shipped ``examples/config.env.example`` annotates almost every line this
+    way, and until this existed the annotation was part of the value: numbers and
+    booleans failed to parse and *silently kept their default* (so an edit did
+    nothing), while strings kept the comment glued on (``LLM_MODEL`` became
+    ``qwen2.5vl:7b  # a model``). A ``#`` only starts a comment when a space comes
+    before it, so tokens and URLs that contain ``#`` survive.
+    """
+    quote = ""
+    for index, character in enumerate(value):
+        if quote:
+            quote = "" if character == quote else quote
+            continue
+        if character in "\"'":
+            quote = character
+            continue
+        if character == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].strip()
+    return value.strip()
+
+
 def parse_env_file(path: Path) -> Dict[str, str]:
     """Parse a ``KEY=value`` file.
 
-    Quotes are stripped, ``#`` starts a comment, and ``export`` prefixes are
-    tolerated so the same file can be ``source``-d in a shell.
+    Quotes are stripped, ``#`` starts a comment (at the start of a line, or after
+    a space), and ``export`` prefixes are tolerated so the same file can be
+    ``source``-d in a shell.
     """
     values: Dict[str, str] = {}
     try:
@@ -364,8 +399,9 @@ def parse_env_file(path: Path) -> Dict[str, str]:
             continue
         key = key.strip()
         value = value.strip()
+        value = _strip_inline_comment(value)
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+            value = value[1:-1]        # inside quotes, everything is literal
         values[key] = value
     return values
 
@@ -385,7 +421,20 @@ def _coerce(value: Any, target_type: Any) -> Any:
         items = [item.strip() for item in text.replace(";", ",").split(",")]
         return [item for item in items if item]
     if target_type is dict or getattr(target_type, "__origin__", None) is dict:
-        pairs = [pair for pair in text.split(",") if ":" in pair]
+        # JSON is accepted because a mapping like the Polarion endpoints is much
+        # easier to write that way — and silently mangling it into
+        # '{"comments": "/polarion...' produced an endpoint that could only 404.
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return {str(key): str(value) for key, value in parsed.items()}
+        # Otherwise: ``key:value`` pairs, separated by ``;`` when one is present
+        # (URLs contain commas, so a comma-separated list is not safe for these).
+        separator = ";" if ";" in text else ","
+        pairs = [pair for pair in text.split(separator) if ":" in pair]
         return {pair.split(":", 1)[0].strip(): pair.split(":", 1)[1].strip() for pair in pairs}
     return text
 

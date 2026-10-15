@@ -30,11 +30,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..config import Config
 from ..control.actions import ActionPlan
 from ..control.os_control import ActionResult, OsController
+from ..control.actions import Action
+from ..skills.base import SkillStore, build_skill_context, match_skills, render_recipe
 from ..screen.capture import CaptureError
 from ..screen.focus import active_window
 from .planner import Planner
@@ -133,10 +135,20 @@ class NaveedAgent:
         on_question: Optional[Callable[[str], None]] = None,
         on_finish: Optional[Callable[[Task], None]] = None,
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        skills: Any = None,
     ) -> None:
         self.config = config
         self.watcher = watcher
-        self.controller = controller or OsController(config, watcher=watcher)
+        self.skills = skills if skills is not None else SkillStore(config)
+        if controller is None:
+            controller = OsController(config, watcher=watcher, tools=self.resolve_tool)
+        elif getattr(controller, "tools", None) is None:
+            # An injected controller still needs the packs' tools to be reachable.
+            controller.tools = self.resolve_tool
+            if getattr(controller, "safety", None) is not None:
+                controller.safety.tool_writes = controller._tool_writes
+        self.controller = controller
+        self._active_skill_ids: Tuple[str, ...] = ()
         self._planner = planner
         self.on_status = on_status
         self.on_say = on_say
@@ -152,6 +164,9 @@ class NaveedAgent:
         self.current: Optional[Task] = None
         self.tasks: List[Task] = []
         self.speech_queue: List[str] = []
+        #: Recipes learned with --teach are saved here, and reported so the user
+        #: can see that the demonstration was understood.
+        self.last_recipe: Optional[Any] = None
 
     # --- wiring ---------------------------------------------------------
     @property
@@ -162,6 +177,96 @@ class NaveedAgent:
 
     def bind_controller(self, controller: OsController) -> None:
         self.controller = controller
+        if getattr(controller, "tools", None) is None:
+            controller.tools = self.resolve_tool
+            if getattr(controller, "safety", None) is not None:
+                controller.safety.tool_writes = controller._tool_writes
+
+    # --- knowledge packs -------------------------------------------------
+    def resolve_tool(self, skill_id: str, tool_name: str) -> Any:
+        """Find a knowledge pack's tool, for :class:`OsController` to run."""
+        store = self.skills.load()
+        skill = store.find_skill(skill_id)
+        if skill is not None:
+            tool = skill.tool(tool_name)
+            if tool is not None:
+                return tool
+        for candidate in store.skills:
+            tool = candidate.tool(tool_name)
+            if tool is not None:
+                return tool
+        return None
+
+    def _skill_context(self, task: Task, window: Any) -> str:
+        """Knowledge for the app in front, injected only when it changes.
+
+        Re-sending the same notes every step would eat the prompt budget a small
+        model needs for the screenshot description, so the block is attached on
+        the first step and whenever the matched packs change (including the moment
+        the task moves into a different app).
+        """
+        if not getattr(self.config.skills, "enabled", True) or not getattr(self.config.skills, "inject", True):
+            return ""
+        try:
+            store = self.skills.load()
+            matches = match_skills(store, window=window, task=task.prompt, limit=2)
+        except Exception as error:
+            logger.debug("skill matching failed: %s", error)
+            return ""
+        ids = tuple(result.skill.id for result in matches)
+        if not matches:
+            self._active_skill_ids = ()
+            return ""
+        if ids == self._active_skill_ids and task.steps:
+            return ""
+        self._active_skill_ids = ids
+        try:
+            return build_skill_context(matches, task=task.prompt, budget=int(self.config.skills.max_context_chars), config=self.config)
+        except Exception as error:
+            logger.debug("skill context failed: %s", error)
+            return ""
+
+    def expand_recipes(self, actions: Sequence[Any], *, depth: int = 0) -> List[Any]:
+        """Replace ``recipe`` actions with the steps they stand for.
+
+        Expansion happens *here*, before execution, so every expanded step goes
+        through exactly the same safety check, logging and verification as an
+        action the model produced itself. A recipe is not a bypass; it is a
+        shorthand.
+        """
+        from ..control.actions import normalize_action
+
+        expanded: List[Action] = []
+        for action in actions:
+            if action.kind != "recipe":
+                expanded.append(action)
+                continue
+            name = str(action.params.get("name") or action.params.get("recipe") or "")
+            arguments = action.params.get("args") if isinstance(action.params.get("args"), dict) else {}
+            recipe = self.skills.load().find_recipe(name)
+            if recipe is None:
+                expanded.append(
+                    normalize_action({"type": "ask", "question": f"I do not know a routine called {name!r}. Should I work it out myself?"})
+                )
+                continue
+            missing = recipe.missing_arguments(arguments)
+            if missing:
+                expanded.append(
+                    normalize_action(
+                        {
+                            "type": "ask",
+                            "question": f"To run {recipe.name} I still need: {', '.join(missing)}.",
+                        }
+                    )
+                )
+                continue
+            if depth >= 3:
+                logger.warning("recipe nesting too deep at %s", recipe.name)
+                continue
+            logger.info("expanding recipe %s with %s", recipe.name, arguments or "no arguments")
+            steps = [normalize_action(payload) for payload in render_recipe(recipe, arguments)]
+            expanded.extend(self.expand_recipes(steps, depth=depth + 1))
+        return expanded
 
     # --- control --------------------------------------------------------
     @property
@@ -308,6 +413,12 @@ class NaveedAgent:
         ocr_text = self._ocr_text(frame) if self.config.agent.use_ocr else ""
         window = active_window()
         monitors = self._monitors()
+        # What Naveed knows about the app in front is part of the request, not a
+        # separate feature: without it the model rediscovers the same UI every
+        # time. It is attached only on the step where it changes.
+        skill_notes = self._skill_context(task, window)
+        if skill_notes:
+            context = f"{context}\n\n{skill_notes}" if context else skill_notes
         try:
             plan = self.planner.plan(
                 task.prompt,
@@ -365,6 +476,10 @@ class NaveedAgent:
     def _run_plan(self, task: Task, plan: ActionPlan, frame: Any, step: int) -> Dict[str, Any]:
         """Perform the actions of one plan, verifying the screen after the batch."""
         outcome: Dict[str, Any] = {}
+        # A `recipe` action is a shorthand for the steps it stands for; expanding
+        # it here means every expanded step is safety-checked, logged and verified
+        # exactly like an action the model emitted itself.
+        plan.actions = self.expand_recipes(plan.actions)
         pointer_actions = sum(1 for action in plan.actions if action.needs_pointer)
         context = self._window_context()
         before_hash = self._frame_hash(frame)
@@ -398,6 +513,8 @@ class NaveedAgent:
                 return outcome
 
             self._emit_status("acting", action.describe())
+            if action.kind == "skill_tool":
+                self._safe(self.on_say, f"Using the {action.get('skill') or 'pack'} API: {action.get('tool')}")
             result = self.controller.perform(action, frame=frame, context=context, raw_text=task.prompt)
             self._safe(self.on_action, result)
             self._safe(self.on_step, task.add_step(result.as_dict()))

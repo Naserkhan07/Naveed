@@ -1,7 +1,7 @@
 # Actions: the vocabulary the model speaks
 
 The planner never emits code, shell commands or free-form prose that something
-downstream has to interpret. It emits **actions** from a closed vocabulary of 22
+downstream has to interpret. It emits **actions** from a closed vocabulary of 31
 kinds (`naveed/control/actions.py::ACTION_KINDS`), each carrying pixel
 coordinates in the screenshot it was shown.
 
@@ -51,6 +51,15 @@ model can see that its last action achieved nothing).
 | `clipboard_set` | `text` (or `clipboard`) | Copies text to the clipboard. |
 | `ask` | `question` | Asks the human and *waits* for the answer. |
 | `done` | `summary` | Ends the task with that sentence. |
+| `read_field` | `target` (label) *or* `x`, `y`; `key`, `modifiers` | Clicks the field, selects everything, copies, and returns the **exact** current text. The only honest way to know what a field contains. |
+| `edit_field` | `target` *or* `x`, `y`; `operation`, `text`/`value`, `old`/`new`, `occurrence`, `save` | Reads the field, computes the change, writes it back, saves it, then **reads it back to verify**. See [EDITING.md](EDITING.md) for the operations. |
+| `select_all` | `target` *or* `x`, `y` | Selects the whole field/document body (`ctrl+a` in context). |
+| `find` | `text`, `target` *or* `x`, `y` | Opens the app's own find bar and searches — jumping to a value beats scrolling to it. |
+| `undo` | `times` (default 1) | `ctrl+z` — the escape hatch when an edit went wrong. |
+| `save` | `hotkey`, `target` *or* `x`, `y` | Saves the current document or field, the way the app saves (`ctrl+s`, or a Save button). |
+| `paste` | `text` (or `clipboard=false` to paste what is already there) | Types anything long via the clipboard rather than key-by-key — faster and exact. |
+| `recipe` | `name`, `args` | Runs a known routine (a recorded demonstration, or a built-in one). Expanded into real, individually safety-checked steps before anything runs — see [POLARION.md](POLARION.md). |
+| `skill_tool` | `skill`, `tool`, `args` | Calls a knowledge pack's own tool, e.g. Polarion's REST API. Only offered when that pack's tools are configured; a tool that writes automatically requires confirmation. |
 
 `note` is free text on any action and is what the panel's log and the spoken
 status use — write it as the sentence you would say to a person.
@@ -77,6 +86,10 @@ switch_window • activate_window     → focus_window
 terminal • run • command            → shell
 finish • complete                   → done
 answer                              → ask
+replace_text • append_text          → edit_field
+macro                               → recipe
+tool                                → skill_tool
+read • get_field • read_value       → read_field
 ```
 
 Key names get the same treatment in `naveed/control/keys.py`, one shared alias
@@ -116,7 +129,7 @@ converts it through the same monitor. **With no OCR available the action fails
 with an explanation rather than clicking somewhere random** — a small model
 guessing coordinates is worse than an honest error.
 
-## The 10 planner rules
+## The 14 planner rules
 
 `naveed/agent/prompts.py::PLANNER_SYSTEM` states, in order:
 
@@ -133,6 +146,22 @@ guessing coordinates is worse than an honest error.
 9. `wait` after anything that loads.
 10. If the request cannot be done on this screen, say so with `done` and an
     explanation instead of inventing clicks.
+11. **To change text that already exists, `read_field` first, then `edit_field`.**
+    Never retype a whole field to change part of it — `set` deletes everything
+    else in it.
+12. `edit_field` proves its own work. If it reports the value did not stick, the
+    edit did not happen — say so instead of assuming success.
+13. A field that ignores typing is read-only or workflow-locked: report it, and do
+    not try the same field three times.
+14. If the app's notes list a tool or a routine that fits, use it (`skill_tool`,
+    `recipe`) — it is more reliable than clicking.
+
+Two rules deserve the emphasis they get in the prompt: number 11 (read before you
+edit) and number 12 (an edit is only done when it has been read back and verified).
+Blind retyping is the single most damaging thing a computer-use agent can do — it
+silently replaces text it never read — and a confident "done" after a write that
+did not stick is the second. Both are handled in the engine rather than trusted to
+the model: see [EDITING.md](EDITING.md).
 
 The planner is wrapped so a model failure can never crash a task: a timeout, an
 HTTP error or unparseable output becomes an empty plan plus a status message, and

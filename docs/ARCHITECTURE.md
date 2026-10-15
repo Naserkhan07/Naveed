@@ -88,7 +88,7 @@ about Qt: it takes callbacks (`on_status`, `on_say`, `on_action`, `on_question`,
 `on_finish`) and the overlay supplies them. That is why the whole task loop can be
 tested headlessly with `tests/fakes.py`.
 
-**4. Everything the agent does is an *action*.** A closed vocabulary of 22 kinds in
+**4. Everything the agent does is an *action*.** A closed vocabulary of 31 kinds in
 `naveed/control/actions.py`, each carrying pixels in the screenshot it was planned
 from. The planner emits JSON, `Action.from_dict` accepts messy variants, and
 `OsController.perform` is the only place that touches the real machine. Adding a
@@ -112,7 +112,10 @@ agent.run(prompt)                     # naveed/agent/executor.py
 # 4. inside the loop, per step:
 frame = watcher.capture_now()         # screen/capture.py + capture_fallback
 state = watcher.world_summary()       # screen/state.py — what changed, what settled
-plan  = planner.plan(prompt, frame, state, history)   # agent/planner.py
+context = agent._skill_context(task, window)  # skills/base.py — the app's notes, once
+plan  = planner.plan(prompt, frame, state, history, context)   # agent/planner.py
+#   → a {"type":"recipe",...} action is expanded here into its real steps, and a
+#     routine's steps are then treated exactly like the model's own
 #   → {"understanding": "...", "summary": "...", "actions": [...], "done": false}
 
 # 5. each action is inspected, then performed
@@ -141,6 +144,9 @@ if frame_hash_after == frame_hash_before: no_change_streak += 1
 | `agent/planner.py` | Prompt work is separate from loop work: the planner can be replaced (a local model, a smarter model) without touching verification or budgets. |
 | `agent/bridge.py` | The bridge is the *only* place that knows about threads, so the agent stays synchronous and testable. |
 | `overlay/bridge.py` | The Qt signal relay is the only place that knows about Qt's thread rules. |
+| `control/editing.py` | The edit engine is separate from the actions that use it, and `apply_edit` is a *pure function*, so the semantics of `replace`/`insert_after`/`append` are testable without a screen, a clipboard or a clock. |
+| `skills/base.py` | A pack is data (facts, shortcuts, recipes, tools) with one matching rule, so a new app is a new file and not a new branch in the agent. |
+| `skills/recorder.py` | Recording is a *listener* on the input side, so it can be started and stopped from the UI without the agent knowing it exists; distilling is a pure function over the recorded events. |
 
 ## Testing strategy
 
@@ -155,6 +161,11 @@ if frame_hash_after == frame_hash_before: no_change_streak += 1
 * **Pixels for the art.** Symmetry, palette, expression distinctness and
   transparency are asserted numerically, so a change to the mascot that "looks
   fine" in one place but breaks the character fails the suite.
+* **A stubbed network for the REST tools.** The Polarion tests replace the one
+  function that touches `urllib`, so error mapping (401/403/404, unreachable
+  server, empty and non-JSON bodies) is asserted without a server — and the
+  transport tests stub the socket instead, to check the headers and the id →
+  project resolution that a stubbed transport would hide.
 
 Run it all:
 

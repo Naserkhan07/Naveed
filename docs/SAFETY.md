@@ -79,6 +79,30 @@ Every verdict lands in `safety.history` (the last 200), which the panel's log an
 `--check` can display. That history is also how the agent learns not to repeat a
 blocked action.
 
+## Editing, tools and recorded routines
+
+Three newer ways to change things are held to the same rule as everything else —
+none of them is a path around the guard:
+
+* **`edit_field` is a write.** `read_field`, `find` and `select_all` are `SAFE`;
+  `edit_field` (and `paste`, `clear`, `save`, `undo`) are writes, and every action
+  kind that writes text is listed in `WRITE_KINDS`. The secret rule is applied to
+  the exact string about to be typed or pasted, so a long random value cannot ride
+  into a field as an "edit".
+* **A knowledge pack's tool that writes needs confirmation.** `skill_tool` calls
+  go through the guard with the tool's own `writes` flag: reading a Polarion work
+  item is `SAFE`, changing one is `DESTRUCTIVE` and asks first. A tool name the
+  guard does not recognise is assumed to write, never the other way round.
+  (An amusing bug this caught: destructive-keyword matching used to scan the
+  action's *kind*, and `skill_tool` contains `kill` — so every pack call asked for
+  confirmation. The scan now covers params, note, context and raw request only.)
+* **A replayed routine is checked step by step.** `recipe` expands into the
+  actions it was taught, and each one is inspected and confirmed exactly as if the
+  model had proposed it. Otherwise recording a demonstration would be a way to
+  launder an action past the guard.
+* **An unconfirmed write is refused by name** — "you did not confirm it" — rather
+  than performed quietly or retried until the user clicks yes.
+
 ## Shell actions
 
 Shell execution is **off by default** (`SAFETY_ALLOW_SHELL=false`) and off in the
@@ -105,7 +129,10 @@ with an unfamiliar model before letting it near your desktop.
 ## What Naveed deliberately does not do
 
 * No background shell, no service installation, no autostart unless you ask.
-* No network calls except the model endpoint you configured.
+* No network calls except the model endpoint you configured — plus, only if you
+  set it up yourself, the Polarion REST API at the base URL you gave it (see
+  [POLARION.md](POLARION.md)). With no base URL configured, no such call is made
+  or even offered.
 * No screen content is stored anywhere you did not configure (and the default
   `~/.naveed/screenshots` prunes itself to the newest 100 frames).
 * No typing into password fields, even with confirmation.

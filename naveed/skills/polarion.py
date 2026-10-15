@@ -45,7 +45,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Recipe, RecipeStep, Skill, SkillTool
 
@@ -61,25 +61,24 @@ DETECTION_PROCESS = [r"polarion"]
 KEYWORDS = ["polarion", "work item", "workitem", "livedoc", "baseline", "test case", "requirement", "defect"]
 
 KNOWLEDGE = [
-    "Polarion ALM (Siemens) stores everything as work items. A work item has a project-qualified ID like PROJ-1234, a Type (requirement, task, defect, test case…), a Title, a Description, a Status, and optionally Resolution, Severity, Priority, Assignee, Due Date and custom fields.",
-    "A work item ID typed into the search/quick-access box and confirmed with Enter opens that work item directly — this is almost always faster than finding it in a table.",
-    "In the modern (Web) UI the fields of an open work item are edited in place: click the field, change it, and save. The Description is a rich-text editor, not a plain textarea.",
+    "Polarion ALM (Siemens) keeps everything as work items, each with a project-qualified id like PROJ-1234, a Type, Title, Description, Status, and usually Resolution, Severity, Priority, Assignee and custom fields.",
+    "Typing a work item id into the search box and pressing Enter opens it directly — faster than finding it in a table.",
+    "In the modern Web UI a work item's fields are edited in place: click the field, change it, save. The Description is rich text, not a textarea.",
     "In the classic UI a work item opens as a form with an Edit button and one Save button for the whole form.",
-    "The Status dropdown only offers the transitions the project's workflow allows from the current state; a state that is not in the list cannot be set by hand either. If the wanted status is missing, report that rather than trying another route.",
-    "Approved and/or released work items can be locked by the workflow: their fields are read-only until the approval is retracted. A field that refuses typing is usually locked, not broken.",
-    "Custom fields are project-specific and their labels differ between installations ('Verified By', 'Customer Impact', 'Component'). Never assume a custom field exists — look for it in the work item form.",
-    "The Save button applies per-field in the modern UI; after editing, confirm the field shows the new value before claiming success.",
-    "Comments are added in the Comments section at the bottom of the work item (in the modern UI) and are saved with their own Post/Save button.",
-    "Polarion has a REST API at <server>/polarion/rest/v1/... Authentication is a Bearer personal access token. When a base URL and token are configured, prefer the API tools below over clicking: they are exact and cannot hit the wrong row.",
-    "Search accepts a Lucene-style query in the search field (for example: type:defect AND status:open). Combined with the Ctrl+F find bar on a table, this beats scrolling.",
-    "Wide work-item tables can be filtered by column and exported; for bulk edits prefer the table's multi-select plus the bulk action, but confirm the selection count before applying anything.",
+    "The Status dropdown only offers the transitions the workflow allows. If the wanted status is absent, it cannot be set by hand either — say so.",
+    "Approved or released work items can be locked: fields stay read-only until the approval is retracted. A field that refuses typing is locked, not broken.",
+    "Custom fields are project-specific and labelled differently in every installation. Look for one in the form instead of assuming it exists.",
+    "Comments live in the Comments section at the bottom of the work item and are saved with their own Post button.",
+    "Polarion has a REST API at <server>/polarion/rest/v1/... (Bearer token). When configured, its tools are exact and cannot hit the wrong row.",
+    "Search takes a Lucene-style query (type:defect AND status:open); ctrl+f finds text inside the current table.",
+    "For bulk edits use the row checkboxes plus the bulk action, and confirm the selection count first.",
 ]
 
 SHORTCUTS = {
-    "open a work item by id": "type the ID (e.g. PROJ-1234) in the search box, then Enter",
+    "open a work item by id": "type the id in the search box, then Enter",
     "find text on the page": "ctrl+f",
-    "save the field you just edited": "the field's own Save button (modern UI) or ctrl+s (classic form)",
-    "go to the project's work items": "ctrl+alt+w in the classic UI, or the Work Items link in the space",
+    "save the field you just edited": "the field's Save button, or ctrl+s in the classic form",
+    "go to the project's work items": "ctrl+alt+w (classic) or the Work Items link",
     "open the logged-in user's tasks": "the My Work Items / Dashboard view",
     "previous / next tab": "ctrl+tab",
     "refresh the view": "f5",
@@ -100,19 +99,19 @@ GLOSSARY = {
 }
 
 GOTCHAS = [
-    "Do not retype a whole Description to change one sentence — read it, change that part, write it back (read_field then edit_field).",
+    "Never retype a whole Description to change one sentence: read_field, then edit_field with 'replace'.",
     "The workflow may forbid the status you were asked for; say so instead of trying another field.",
     "A locked field silently ignores typing. If an edit does not take, check whether the work item is Approved/Released.",
-    "The description editor is rich text: pasting plain text is fine, but re-sending the whole field can lose formatting the user cares about. Prefer a targeted edit over a full replacement.",
+    "The Description is a rich-text editor: a targeted edit keeps the user's formatting, a full replacement loses it.",
     "IDs are project-qualified; PROJ-42 and OTHR-42 are different work items. Never drop or invent the project prefix.",
-    "Tables reload asynchronously. After changing a filter or query, wait for the row count to settle before clicking a row, or the click lands on a stale row.",
+    "Tables reload asynchronously: after changing a filter, wait for the row count to settle before clicking a row.",
 ]
 
 EDITING_TIPS = [
-    "To change an existing value, use read_field first (it copies the field's exact text), then edit_field with operation 'replace' for a surgical change, or 'set' only when the whole value must change.",
-    "To append a comment-style note to an existing description, use edit_field with operation 'append' — never 'set', which would delete the original text.",
+    "To change a value: read_field first, then edit_field with 'replace'. Use 'set' only when the whole value must go.",
+    "To add to an existing description use edit_field 'append', never 'set' (which deletes the original).",
     "If a field is inside a rich-text editor, click it first and let the caret settle before reading or writing.",
-    "After the edit, the field must show the new value; edit_field verifies this automatically and reports honestly when it does not.",
+    "edit_field verifies its own work and says so when the field refused the change.",
 ]
 
 # --- API fast path ----------------------------------------------------------
@@ -214,8 +213,26 @@ def _endpoint(config: Any, key: str, **values: Any) -> str:
 
 
 def _project(config: Any, project: str = "") -> str:
+    """The project to use when one was not given explicitly."""
     settings = _settings(config)
     return project or str(getattr(settings, "polarion_project", "") or "")
+
+
+def _split_id(config: Any, identifier: str, project: str = "") -> Tuple[str, str]:
+    """Work out which project a work item id belongs to, and its number.
+
+    Precedence matters and used to be wrong: a *qualified* id (``OPS-7``) names its
+    own project, so it must beat ``SKILLS_POLARION_PROJECT`` (which is only the
+    default for bare ids). Getting this backwards silently addressed the wrong
+    project — the one failure mode an ALM tool must never have.
+    """
+    identifier = identifier.strip()
+    if "-" in identifier:
+        prefix, _, short = identifier.partition("-")
+        if prefix.strip():
+            return (project or prefix.strip()), short.strip()
+    short = identifier
+    return _project(config, project), short
 
 
 # --- tools ------------------------------------------------------------------
@@ -249,19 +266,19 @@ def polarion_get_work_item(config: Any, id: str = "", work_item_id: str = "", pr
     identifier = (id or work_item_id or "").strip()
     if not identifier:
         return "I need the work item id, for example PROJ-1234."
-    project = _project(config, project) or (identifier.split("-")[0] if "-" in identifier else "")
-    short = identifier.split("-", 1)[1] if "-" in identifier else identifier
+    project, short = _split_id(config, identifier, project)
     response = polarion_request(config, _endpoint(config, "work_item", project=project, id=short))
     item = _items(response.get("data"))
     if not item and isinstance(response.get("data"), dict):
         item = [response["data"]]
     if not item:
         return f"Polarion returned nothing for {identifier}."
+    display = identifier if "-" in identifier or not project else f"{project}-{identifier}"
     attributes = item[0].get("attributes", {}) if isinstance(item[0].get("attributes"), dict) else {}
     wanted = [name.strip() for name in fields.split(",") if name.strip()] if fields else [
         "title", "type", "status", "resolution", "assignee", "severity", "priority", "description"
     ]
-    lines = [f"{identifier}:"]
+    lines = [f"{display}:"]
     for name in wanted:
         value = attributes.get(name)
         if isinstance(value, dict):
@@ -305,8 +322,7 @@ def polarion_update_work_item(
     if not updates:
         return "Tell me which field to change and what to set it to."
 
-    project = _project(config, project) or (identifier.split("-")[0] if "-" in identifier else "")
-    short = identifier.split("-", 1)[1] if "-" in identifier else identifier
+    project, short = _split_id(config, identifier, project)
     body = {"data": {"type": "workitems", "id": f"{project}/{short}", "attributes": updates}}
     response = polarion_request(config, _endpoint(config, "work_item", project=project, id=short), method="PATCH", payload=body)
     changed = ", ".join(f"{name}={value!r}" for name, value in updates.items())
@@ -329,8 +345,7 @@ def polarion_add_comment(config: Any, id: str = "", work_item_id: str = "", comm
             "This Polarion server is not configured with a comments endpoint, so I should add the "
             f"comment in the UI instead — open {identifier} and I will post it in the Comments box."
         )
-    project = _project(config, project) or (identifier.split("-")[0] if "-" in identifier else "")
-    short = identifier.split("-", 1)[1] if "-" in identifier else identifier
+    project, short = _split_id(config, identifier, project)
     path = template.format(project=project, id=short)
     payload = {"data": {"type": "comments", "attributes": {"text": {"type": "text/html", "value": body_text}}}}
     response = polarion_request(config, path, method="POST", payload=payload)

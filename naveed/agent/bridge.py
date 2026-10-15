@@ -302,6 +302,43 @@ class AgentBridge:
                 self._publish_state()
 
     # --- status snapshot ----------------------------------------------------
+    # --- learned routines ------------------------------------------------
+    def run_recipe(self, recipe: Any, arguments: Optional[Dict[str, Any]] = None, *, on_step: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
+        """Replay a recorded routine through the real controller.
+
+        No model is involved: the steps are the ones the user demonstrated, so
+        replay works offline and gives the same result every time. Every step
+        still passes the safety guard and is logged like any other action — a
+        learned routine is not a way around the checks, it is a way of *being*
+        them.
+        """
+        from ..control.actions import normalize_action
+        from ..skills.base import render_recipe
+
+        self.start()
+        steps = [normalize_action(payload) for payload in render_recipe(recipe, arguments or {})]
+        steps = self.agent.expand_recipes(steps)
+        controller = self.controller
+        frame = None
+        failures: List[str] = []
+        for index, action in enumerate(steps, 1):
+            if action.needs_pointer:
+                try:
+                    frame = self.watcher.snapshot(fresh=True, save=True)
+                except Exception:
+                    frame = None
+            result = controller.perform(action, frame=frame, context=recipe.app or "")
+            if on_step is not None:
+                on_step(result.as_dict())
+            if not result.ok:
+                failures.append(f"step {index} ({action.kind}): {result.message}")
+                if result.blocked:
+                    break
+            time.sleep(min(max(getattr(action, "delay", 0.35) or 0.35, 0.05), 2.0))
+        if failures:
+            return "I could not finish " + recipe.name + ": " + "; ".join(failures[:3])
+        return f"ran {recipe.name}: {len(steps)} step(s) from the recording"
+
     def status(self) -> Dict[str, Any]:
         """Everything the panel's status card shows, in one dict."""
         watcher_stats = self.watcher.stats_payload() if self.watcher else {}

@@ -38,6 +38,10 @@ class NaveedApp:
         self.config = config or load_config()
         self.overlay: Optional[Any] = None
         self.bridge: Optional[Any] = None
+        #: set to True by the stop hotkey while recording a demonstration
+        self._teach_stop = False
+        #: tasks finished in this session, for --export-training
+        self.recent_tasks: List[Any] = []
 
     # --- reporting --------------------------------------------------------
     def describe(self) -> Dict[str, Any]:
@@ -127,6 +131,338 @@ class NaveedApp:
             return 0 if task.status.value == "done" else 1
         finally:
             bridge.stop()
+
+
+    # --- knowledge packs, recipes and teaching ---------------------------
+    def show_skills(self, *, verbose: bool = True) -> int:
+        """List the packs Naveed has been taught, and what is in them."""
+        from .skills.base import SkillStore
+
+        store = SkillStore(self.config).load()
+        rows = store.summaries()
+        if not rows:
+            print("no knowledge packs are loaded", file=sys.stderr)
+            return 1
+        print(f"Naveed knows {len(rows)} app pack(s)  (from {store.directory}):\n")
+        for row in rows:
+            print(f"  {row['id']} — {row['name']}   [{row['source']}]")
+            if row["summary"]:
+                print(f"      {row['summary']}")
+            if row["window_patterns"]:
+                print(f"      detected by: {', '.join(row['window_patterns'])}")
+            print(f"      {row['knowledge']} facts")
+            for recipe in row["recipes"]:
+                print(f"      routine: {recipe}")
+            for tool in row["tools"]:
+                print(f"      tool:    {tool}")
+            print()
+        extra = [recipe for recipe in store.all_recipes() if recipe.learned]
+        if extra:
+            print(f"{len(extra)} routine(s) learned by demonstration live in {store.directory / 'learned'}")
+        if store.errors:
+            print("problems while loading packs:", file=sys.stderr)
+            for error in store.errors:
+                print(f"  - {error}", file=sys.stderr)
+        api_ready = bool(self.config.skills.polarion_base_url)
+        print(
+            "\nAPI fast path: "
+            + ("configured" if api_ready else "not configured (Naveed will drive the UI instead)")
+            + ("" if self.config.skills.allow_api_writes else "  · API writes are OFF (set SKILLS_ALLOW_API_WRITES=true to enable)")
+        )
+        return 0
+
+    def show_recipes(self) -> int:
+        """List every routine, with the arguments each one takes."""
+        from .skills.base import SkillStore
+
+        store = SkillStore(self.config).load()
+        recipes = store.all_recipes()
+        if not recipes:
+            print("no routines yet — record one with: python -m naveed --teach <name>")
+            return 1
+        print("Routines (run one with --run-recipe <name> --arg key=value):\n")
+        for recipe in recipes:
+            origin = "learned" if recipe.learned else "built-in"
+            owner = f" [{recipe.skill}]" if recipe.skill else ""
+            print(f"  {recipe.signature()}{owner}  ({origin})")
+            if recipe.description:
+                print(f"      {recipe.description}")
+            if recipe.params:
+                for name, description in recipe.params.items():
+                    default = recipe.defaults.get(name)
+                    suffix = f" (default: {default})" if default not in (None, "") else ""
+                    print(f"      --arg {name}=…  {description}{suffix}")
+            print(f"      {len(recipe.steps)} steps")
+            print()
+        return 0
+
+    def run_recipe(self, name: str, arguments: Dict[str, str], *, verbose: bool = True, dry_run: bool = False) -> int:
+        """Run a recorded routine directly — no model required.
+
+        This is the payoff of teaching: the steps are Naveed's own, so replaying
+        them needs no planning model at all. That makes a demonstrated task work
+        offline, on a machine with no API key, and identically every time.
+        """
+        from .agent.bridge import AgentBridge
+        from .skills.base import SkillStore
+
+        store = SkillStore(self.config).load()
+        recipe = store.find_recipe(name)
+        if recipe is None:
+            print(f"there is no routine called {name!r} — see --recipes", file=sys.stderr)
+            return 1
+        missing = recipe.missing_arguments(arguments)
+        if missing:
+            print(f"{recipe.name} needs: {', '.join(missing)}", file=sys.stderr)
+            print(f"  example: python -m naveed --run-recipe {recipe.name} " + " ".join(f"--arg {m}=…" for m in missing), file=sys.stderr)
+            return 1
+
+        if verbose:
+            print(f"{recipe.name}: {recipe.description or 'a recorded routine'}")
+            for number, step in enumerate(self._recipe_lines(recipe, arguments), 1):
+                print(f"  {number}. {step}")
+            if dry_run:
+                print("dry run: these steps are not being performed")
+
+        config = self.config
+        if dry_run:
+            config = config.merged(**{"safety.dry_run": True})
+        bridge = AgentBridge(config)
+        self.bridge = bridge
+        bridge.start()
+        try:
+            result = bridge.run_recipe(recipe, arguments)
+            print(result)
+            return 0 if not result.startswith("I could not") else 1
+        finally:
+            bridge.stop()
+
+    @staticmethod
+    def _recipe_lines(recipe: Any, arguments: Dict[str, str]) -> List[str]:
+        """A routine's steps as sentences, for `--dry-run` and the panel log.
+
+        Worth printing even when the run is real: a routine replays faithfully,
+        which is exactly why the user should see what it is about to do before it
+        does it.
+        """
+        from .skills.base import render_recipe
+
+        lines: List[str] = []
+        for payload in render_recipe(recipe, arguments or {}):
+            kind = str(payload.get("type", "?"))
+            detail = ""
+            if kind in ("click", "double_click", "right_click", "move"):
+                detail = f"at {payload.get('x')},{payload.get('y')}"
+            elif kind in ("type", "paste"):
+                detail = repr(str(payload.get("text", ""))[:60])
+            elif kind in ("key", "hotkey"):
+                keys = payload.get("keys") or payload.get("key") or payload.get("hotkey") or ""
+                modifiers = payload.get("modifiers") or []
+                if isinstance(modifiers, str):
+                    modifiers = [modifiers]
+                detail = "+".join([str(item) for item in modifiers] + [str(keys)]) if modifiers else str(keys)
+            elif kind == "edit_field":
+                place = payload.get("target") or f"{payload.get('x')},{payload.get('y')}"
+                value = payload.get("value") or payload.get("text") or ""
+                if not value and (payload.get("old") or payload.get("new")):
+                    value = f"{payload.get('old', '')} → {payload.get('new', '')}"
+                detail = f"{payload.get('operation', 'set')} {place}"
+                if value:
+                    detail += f" to {str(value)[:60]!r}"
+            elif kind == "skill_tool":
+                detail = f"{payload.get('tool')}({payload.get('args') or {}})"
+            elif kind == "wait":
+                detail = f"{payload.get('seconds', 1)}s"
+            note = payload.get("note") or ""
+            lines.append(" ".join(part for part in (kind, detail, f"— {note}" if note else "") if part).strip())
+        return lines
+
+    def teach(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        variables: Optional[Dict[str, str]] = None,
+        seconds: float = 0.0,
+        verbose: bool = True,
+    ) -> int:
+        """Learn a routine by watching the user perform it once."""
+        from .control.editing import looks_like_field_label
+        from .skills.base import SkillStore
+        from .skills.recorder import ActionRecorder, Tailer, distill_recipe, suggest_parameters
+
+        store = SkillStore(self.config).load()
+        watcher = None
+        capture = None
+        try:
+            from .agent.bridge import AgentBridge
+
+            bridge = AgentBridge(self.config)
+            watcher = bridge.watcher
+            capture = bridge.capture
+        except Exception as error:
+            logger.debug("teaching without a watcher: %s", error)
+
+        def screenshot() -> Optional[str]:
+            if capture is None:
+                return None
+            try:
+                frame = capture.grab()
+                if watcher is not None:
+                    return str(watcher.snapshot(fresh=True, save=True).saved_path or "")
+                return str(getattr(frame, "saved_path", "") or "")
+            except Exception:
+                return None
+
+        def ocr_label(path: str, x: int, y: int) -> str:
+            """The visible text nearest a click point — the step's anchor.
+
+            A recorded coordinate is only valid while the window stays where it
+            was. The label Naveed saw under the click is what lets replay find
+            that element again after the window has moved, so it is worth an OCR
+            pass per click (and the whole feature works without OCR, it just
+            records coordinates instead of labels).
+            """
+            try:
+                from .control.ocr import read_text
+
+                Image = lazy.load("PIL.Image", extra="capture")
+                with Image.open(path) as handle:
+                    matches = read_text(handle.convert("RGB"))
+            except Exception:
+                return ""
+            best = None
+            best_distance = None
+            for match in matches:
+                centre_x = (match.left + match.right) / 2.0
+                centre_y = (match.top + match.bottom) / 2.0
+                # Prefer text close to the click, and prefer a label-like string
+                # ("Description", "Status") over a sentence.
+                distance = ((centre_x - x) ** 2 + (centre_y - y) ** 2) ** 0.5
+                if distance > 220:
+                    continue
+                if not looks_like_field_label(match.text) and distance > 60:
+                    continue
+                if best_distance is None or distance < best_distance:
+                    best, best_distance = match.text.strip(), distance
+            return best or ""
+
+        def window() -> Any:
+            try:
+                from .screen.focus import active_window
+
+                return active_window()
+            except Exception:
+                return None
+
+        recorder = ActionRecorder(name, window=window, screenshot=screenshot, ocr=ocr_label)
+        recorder.start()
+        tailer = Tailer(recorder)
+        if not tailer.available():
+            print(
+                "recording needs the input extra (pynput):\n"
+                '  pip install "naveed[input]"',
+                file=sys.stderr,
+            )
+            return 1
+        if not tailer.start():
+            print("could not hook the mouse and keyboard on this system", file=sys.stderr)
+            return 1
+
+        print(f"Recording “{name}”. Do the task once, the way you normally would.")
+        print("  · Naveed is only watching: it will not act while you demonstrate.")
+        print("  · Press Ctrl+Alt+T or Ctrl-C when you are finished.")
+        if seconds:
+            print(f"  · recording for up to {seconds:.0f} seconds")
+        try:
+            started = time.time()
+            while True:
+                if seconds and time.time() - started >= seconds:
+                    break
+                if self._teach_stop_requested():
+                    break
+                time.sleep(0.2)
+        except KeyboardInterrupt:
+            print("\n(stopped by Ctrl-C)")
+        finally:
+            tailer.stop()
+
+        session = recorder.stop()
+        print(f"\n{session.summary()}")
+
+        typed_values = []
+        for event in session.events:
+            if event.kind == "text" and event.text.strip():
+                typed_values.append(event.text)
+        suggestions = suggest_parameters(typed_values) if not variables else {}
+        if suggestions:
+            print("\nValues you typed that look like they change per run:")
+            for text, parameter in suggestions.items():
+                print(f"    {text!r}  ->  {{{{{parameter}}}}}")
+            print("  (pass --var 'PROJ-1042=work_item_id' to rename one; --var 'text=' drops it)")
+
+        recipe = distill_recipe(
+            session,
+            description=description or f"recorded on {time.strftime('%Y-%m-%d')}",
+            variables=variables or suggestions,
+        )
+        if not recipe.steps:
+            print("nothing usable was recorded — try again and use the mouse for at least one click", file=sys.stderr)
+            return 1
+        path = store.save_recipe(recipe)
+        print(f"\nLearned “{recipe.name}”: {len(recipe.steps)} steps, {len(recipe.params)} parameter(s).")
+        for index, step in enumerate(recipe.steps, 1):
+            detail = step.params.get("text") or step.params.get("hotkey") or step.params.get("key") or step.anchor or ""
+            print(f"  {index}. {step.kind} {detail}")
+        print(f"\nSaved to {path}")
+        print(f"Run it again with:\n  python -m naveed --run-recipe {recipe.name}" + "".join(f" --arg {name}=…" for name in recipe.params))
+        return 0
+
+    def _teach_stop_requested(self) -> bool:
+        """True once the stop hotkey has been pressed (the overlay sets the flag)."""
+        return bool(getattr(self, "_teach_stop", False))
+
+    def export_training(self, path: str, *, verbose: bool = True) -> int:
+        """Write recorded steps as JSONL for later fine-tuning of a small model.
+
+        Naveed cannot fine-tune anything on your desktop — but it can record what
+        actually happened (the task, the screen state, the action, whether the
+        action changed the screen) in the shape a training run wants. This is the
+        bridge between "demonstrate it to me" and "train a model on it".
+        """
+        import json
+        from .skills.base import SkillStore
+
+        store = SkillStore(self.config).load()
+        rows: List[Dict[str, Any]] = []
+        for recipe in store.all_recipes():
+            for index, step in enumerate(recipe.steps):
+                rows.append(
+                    {
+                        "kind": "demonstration",
+                        "routine": recipe.name,
+                        "app": recipe.app,
+                        "step": index + 1,
+                        "action": {"type": step.kind, **step.params},
+                        "anchor": step.anchor,
+                        "window": step.window,
+                    }
+                )
+        for task in getattr(self, "recent_tasks", []) or []:
+            for step in getattr(task, "steps", []) or []:
+                rows.append({"kind": "task", "task": getattr(task, "prompt", ""), "step": step})
+
+        if not rows:
+            print("nothing recorded yet — use --teach to demonstrate a task first", file=sys.stderr)
+            return 1
+        with open(path, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"wrote {len(rows)} example(s) to {path}")
+        if verbose:
+            print("  · fine-tuning is not something a desktop app does on your machine;")
+            print("    this is the dataset to take to a training run if you want one.")
+        return 0
 
     def run_watch(self, *, seconds: float = 0.0, verbose: bool = True) -> int:
         """Headless screen watching: print what the world model sees."""

@@ -111,6 +111,44 @@ vision-capable. Working choices: `gpt-4o-mini`, `qwen2.5-vl-7b-instruct`,
 `llava`, `qwen2.5vl:7b` on Ollama, `gemini-2.0-flash` via its OpenAI-compatible
 endpoint.
 
+## An edit "did not stick"
+
+That message is the engine being honest, not failing: it read the field back and
+the value had not changed. In order of likelihood:
+
+* **The field is locked.** Polarion (and Jira, and plenty of others) make fields
+  read-only in certain workflow states — an Approved requirement, a released item,
+  a closed ticket. Nothing can be typed into it by hand either. Report the state
+  rather than retrying. See [POLARION.md](POLARION.md).
+* **The field was not focused.** If the click landed on the label instead of the
+  input, the typing goes nowhere. A richer app sometimes needs a click plus a
+  moment for the caret to settle; the pack's `EDITING THIS APP` notes say so for
+  apps where it matters.
+* **It is a rich-text or canvas editor.** Long values are pasted rather than typed
+  (over 24 characters), which some canvas widgets mangle. The engine already
+  retries once as plain typing, then stops and tells you what the field holds.
+* **The screenshot was stale.** Coordinates come from the last frame; if the
+  window moved between the frame and the click, the click landed somewhere else.
+  Keep the target window in front while a task runs.
+
+Nothing is ever "fixed" by typing harder, and an unverified edit is never reported
+as a success.
+
+## A taught routine does not work the way I recorded it
+
+* **Replay repeats, it does not generalise.** The routine is the steps you
+  demonstrated, with your values substituted. If the recorded run clicked the
+  third row of a table, replay will click the third row.
+* **Values became parameters.** `PROJ-1042`, an email address or a date in what you
+  typed is turned into `{work_item_id}` / `{email}` / `{date}` and has to be given
+  at replay time: `--run-recipe name --arg work_item_id=PROJ-1042`. `--recipes`
+  lists each routine's arguments.
+* **A click may have been anchored to a label.** If OCR is available, a click is
+  stored with the text nearest to it, which is what lets the routine survive the
+  window moving — but it also means the routine follows that label.
+* Inspect it directly: `~/.naveed/skills/learned/<name>.json` is plain JSON. Edit
+  it by hand if the recording was almost right, or delete it and record again.
+
 ## Where the logs and data are
 
 ```
@@ -120,6 +158,7 @@ endpoint.
   screenshots/      frames Naveed kept, newest 100
   models/           downloaded voices / local model files
   state/            the watcher's world model, if persisted
+  skills/           the knowledge packs, and learned/*.json — your routines
 ```
 
 ```bash
