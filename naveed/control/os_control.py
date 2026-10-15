@@ -21,6 +21,7 @@ subtle bugs of desktop automation live.  It exists to solve four of them:
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .. import lazy
 from ..config import Config
@@ -86,13 +89,20 @@ class OsController:
         before_pointer: Optional[Callable[[], None]] = None,
         after_pointer: Optional[Callable[[], None]] = None,
         on_action: Optional[Callable[[ActionResult], None]] = None,
+        tools: Optional[Callable[[str, str], Any]] = None,
     ) -> None:
         self.config = config
         self.watcher = watcher
+        #: ``(skill_id, tool_name) -> SkillTool | None``. Injected by the agent so
+        #: knowledge-pack tools run through *this* path — with the same safety
+        #: check, confirmation, logging and result handling as a click.
+        self.tools = tools
         self.safety = guard or SafetyGuard(config.safety)
         self.on_action = on_action
         self._before_pointer = before_pointer
         self._after_pointer = after_pointer
+        if tools is not None:
+            self.safety.tool_writes = self._tool_writes
         self.input = input_controller or InputController(
             dry_run=config.safety.dry_run,
             before_pointer=self._pointer_hooks,
@@ -279,6 +289,160 @@ class OsController:
         point = self.global_point(action, frame)
         self.input.scroll(amount, dx=int(action.get("dx") or 0), x=point[0] if point else None, y=point[1] if point else None)
         return f"scrolled {amount}", {"amount": amount}
+
+    # --- handlers: knowledge-pack tools ---------------------------------
+    def _tool_writes(self, skill_id: str, tool_name: str) -> bool:
+        """Ask the pack whether a tool changes data (used by the safety guard)."""
+        tool = self._resolve_tool(skill_id, tool_name)
+        if tool is None:
+            return True     # unknown tool: assume it writes
+        return bool(getattr(tool, "writes", False))
+
+    def _resolve_tool(self, skill_id: str, tool_name: str) -> Any:
+        if self.tools is None:
+            return None
+        try:
+            return self.tools(skill_id, tool_name)
+        except Exception as error:
+            logger.debug("could not resolve tool %s/%s: %s", skill_id, tool_name, error)
+            return None
+
+    def _do_skill_tool(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        """Call a tool a knowledge pack offers (a REST API, or anything else).
+
+        This is the exact path for "do not click through a UI when a documented
+        API call will do" — an API call cannot land on the wrong row.
+        """
+        skill_id = str(action.get("skill") or "")
+        tool_name = str(action.get("tool") or action.get("name") or "")
+        if not tool_name:
+            raise ActionError("skill_tool needs a tool name")
+        tool = self._resolve_tool(skill_id, tool_name)
+        if tool is None:
+            raise ActionError(
+                f"there is no tool {tool_name!r} in {skill_id or 'any'} pack — "
+                "check --skills for what is available"
+            )
+        if not tool.is_available(self.config):
+            raise ActionError(f"{tool.name} is not available yet (it needs configuration, see --skills)")
+
+        arguments = action.params.get("args")
+        if not isinstance(arguments, dict):
+            arguments = {
+                key: value
+                for key, value in action.params.items()
+                if key not in ("skill", "tool", "name", "args", "note", "type", "kind")
+            }
+        if self.config.safety.dry_run:
+            return f"would call {tool.name}({', '.join(f'{k}={v!r}' for k, v in arguments.items())})", {"dry_run": True}
+        try:
+            outcome = tool.function(self.config, **arguments)
+        except TypeError as error:
+            raise ActionError(f"{tool.name} was called with the wrong arguments ({error})") from error
+        except Exception as error:
+            raise ActionError(str(error)) from error
+        if isinstance(outcome, dict):
+            message = str(outcome.get("message") or outcome.get("result") or "done")
+            return message, outcome
+        return str(outcome), {"result": str(outcome)}
+
+    # --- handlers: editing (read-modify-write, verified) ----------------
+    def _field_editor(self):
+        """A :class:`FieldEditor` wired to this controller.
+
+        The locator is the same OCR-based target resolution the click handler
+        uses, so "the Description field" means the same thing to an edit as it
+        does to a click.
+        """
+        from .editing import FieldEditor
+
+        if getattr(self, "_editor_cache", None) is None:
+            self._editor_cache = FieldEditor(
+                self.input,
+                locate=lambda frame, target: self._resolve_target_point(
+                    Action(kind="click", params={"target": target}), frame
+                ),
+            )
+        return self._editor_cache
+
+    def _do_read_field(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        """Read a field's *exact* current text (click, select all, copy)."""
+        editor = self._field_editor()
+        point = self.global_point(action, frame) or self._resolve_target_point(action, frame)
+        reading = editor.read(point, frame=frame, target=str(action.get("target") or ""))
+        if not reading.trustworthy:
+            raise ActionError(reading.error or "I could not read that field")
+        preview = reading.text if len(reading.text) <= 400 else reading.text[:400] + "…"
+        return (
+            f"read {len(reading.text)} characters from the field",
+            {"text": preview, "characters": len(reading.text), "full_text": reading.text, "source": reading.source},
+        )
+
+    def _do_edit_field(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        """Change a field in place: read it, modify the text, write it back, verify."""
+        from .editing import parse_edit_request
+
+        editor = self._field_editor()
+        request = parse_edit_request(action.params)
+        request.note = action.note or request.note
+        point = self.global_point(action, frame)
+        outcome = editor.edit(
+            request,
+            frame=frame,
+            target=str(action.get("target") or action.get("element") or ""),
+            point=point,
+        )
+        payload = outcome.as_dict()
+        payload["expected"] = outcome.expected
+        if not outcome.ok:
+            raise ActionError(outcome.message or "the edit did not take")
+        if outcome.changed:
+            message = f"{request.describe()} — done ({outcome.write_method})"
+        else:
+            message = "that field already said exactly that"
+        return message, payload
+
+    # --- handlers: keyboard --------------------------------------------
+    def _do_select_all(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        modifier = "cmd" if sys.platform.startswith("darwin") else "ctrl"
+        self.input.press_key("a", [modifier])
+        return "selected everything in the focused field", {}
+
+    def _do_find(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        """Open the in-window find bar and search for text.
+
+        Useful on pages with long lists (a Polarion work-item table, a document)
+        where scrolling to find something is slow and unreliable.
+        """
+        text = action.text or str(action.get("query") or "")
+        if not text:
+            raise ActionError("find needs the text to search for")
+        modifier = "cmd" if sys.platform.startswith("darwin") else "ctrl"
+        self.input.press_key("f", [modifier])
+        time.sleep(0.2)
+        self.input.type_text(text)
+        if action.get("enter", True):
+            time.sleep(0.1)
+            self.input.press_key("Enter")
+        return f"searched the page for {text!r}", {"query": text}
+
+    def _do_undo(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        modifier = "cmd" if sys.platform.startswith("darwin") else "ctrl"
+        times = int(action.get("times") or 1)
+        for _ in range(max(1, min(times, 20))):
+            self.input.press_key("z", [modifier])
+            time.sleep(0.12)
+        return f"undid the last {times} change(s)", {"times": times}
+
+    def _do_save(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        modifier = "cmd" if sys.platform.startswith("darwin") else "ctrl"
+        self.input.press_key("s", [modifier])
+        return "saved", {}
+
+    def _do_paste(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:
+        modifier = "cmd" if sys.platform.startswith("darwin") else "ctrl"
+        self.input.press_key("v", [modifier])
+        return "pasted the clipboard", {}
 
     # --- handlers: keyboard --------------------------------------------
     def _do_type(self, action: Action, frame: Any) -> Tuple[str, Dict[str, Any]]:

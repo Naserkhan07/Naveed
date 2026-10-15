@@ -28,6 +28,7 @@ __all__ = [
     "LLMSettings",
     "OverlaySettings",
     "SafetySettings",
+    "SkillsSettings",
     "load_config",
     "config_paths",
     "parse_env_file",
@@ -228,6 +229,29 @@ class VoiceSettings:
 
 # --- root config ------------------------------------------------------------
 
+
+@dataclass
+class SkillsSettings:
+    """Knowledge packs (taught apps) and the optional API fast path."""
+
+    enabled: bool = True
+    directory: str = ""              # "" -> ~/.naveed/skills
+    inject: bool = True              # put matched knowledge into the prompt
+    max_context_chars: int = 2600    # budget for that knowledge
+    teach_hotkey: str = "ctrl+alt+t"
+
+    # --- the API fast path (off until configured) ------------------------
+    # When a base URL is set, packs may offer direct REST tools. Reads are
+    # allowed by default; writes need allow_api_writes, because an API call is
+    # not the same thing as a click that a human can see happening.
+    allow_api: bool = True
+    allow_api_writes: bool = False
+    polarion_base_url: str = ""
+    polarion_token: str = ""
+    polarion_project: str = ""
+    polarion_endpoints: Dict[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class Config:
     """The whole configuration tree."""
@@ -238,6 +262,7 @@ class Config:
     safety: SafetySettings = field(default_factory=SafetySettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     voice: VoiceSettings = field(default_factory=VoiceSettings)
+    skills: SkillsSettings = field(default_factory=SkillsSettings)
     #: where config.env itself was loaded from (empty when none was found)
     source_file: str = ""
     home: str = ""
@@ -264,8 +289,12 @@ class Config:
     def state_dir(self) -> Path:
         return self.base_dir / "state"
 
+    @property
+    def skills_dir(self) -> Path:
+        return Path(self.skills.directory) if self.skills.directory else self.base_dir / "skills"
+
     def ensure_dirs(self) -> "Config":
-        for path in (self.base_dir, self.screenshots_dir, self.logs_dir, self.models_dir, self.state_dir):
+        for path in (self.base_dir, self.screenshots_dir, self.logs_dir, self.models_dir, self.state_dir, self.skills_dir):
             try:
                 Path(path).mkdir(parents=True, exist_ok=True)
             except OSError:

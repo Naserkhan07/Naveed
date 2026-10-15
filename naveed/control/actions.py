@@ -38,6 +38,13 @@ ACTION_KINDS: Tuple[str, ...] = (
     "type", "key", "hotkey", "wait", "screenshot", "look",
     "open_app", "open_url", "open_file", "focus_window",
     "shell", "clipboard_get", "clipboard_set", "done", "ask",
+    # --- editing, as opposed to clicking and typing -----------------------
+    # "read the field, change it, write it back, check it landed" is a different
+    # job from "type these characters here", and it is the one users mean when
+    # they ask Naveed to edit something anywhere.
+    "read_field", "edit_field", "select_all", "find", "undo", "save", "paste",
+    # --- knowledge packs and learned routines -----------------------------
+    "recipe", "skill_tool",
 )
 
 _ALIASES: Dict[str, str] = {
@@ -79,6 +86,30 @@ _ALIASES: Dict[str, str] = {
     "finish": "done",
     "complete": "done",
     "answer": "ask",
+    # editing
+    "get_field": "read_field",
+    "field_value": "read_field",
+    "read_text": "read_field",
+    "set_field": "edit_field",
+    "fill_field": "edit_field",
+    "update_field": "edit_field",
+    "modify_field": "edit_field",
+    "change_field": "edit_field",
+    "replace_text": "edit_field",
+    "append_text": "edit_field",
+    "find_replace": "edit_field",
+    "search": "find",
+    "search_in_page": "find",
+    "revert": "undo",
+    "save_file": "save",
+    "commit": "save",
+    "paste_clipboard": "paste",
+    # knowledge packs
+    "run_recipe": "recipe",
+    "playbook": "recipe",
+    "macro": "recipe",
+    "tool": "skill_tool",
+    "api": "skill_tool",
 }
 
 
@@ -142,7 +173,17 @@ class Action:
 
     @property
     def needs_pointer(self) -> bool:
-        return self.kind in ("click", "double_click", "right_click", "middle_click", "move", "drag", "scroll")
+        return self.kind in ("click", "double_click", "right_click", "middle_click", "move", "drag", "scroll", "edit_field", "read_field")
+
+    @property
+    def is_edit(self) -> bool:
+        """True for the read-modify-write family, which verifies itself."""
+        return self.kind in ("edit_field", "read_field")
+
+    @property
+    def writes_text(self) -> bool:
+        """True when the action puts text into the machine (guarded for secrets)."""
+        return self.kind in ("type", "clipboard_set", "edit_field", "skill_tool")
 
     @property
     def needs_keyboard(self) -> bool:

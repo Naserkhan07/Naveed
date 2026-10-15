@@ -29,7 +29,7 @@ import re
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..config import DEFAULT_BLOCKED_PATTERNS, DEFAULT_DESTRUCTIVE_KEYWORDS, SafetySettings
 from .actions import Action
@@ -64,6 +64,28 @@ SECRETISH_VALUE = (
     r"^https?://[^\s]*:[^\s]*@",                       # URL with embedded creds
     r"^\d{12,19}$",                                     # card numbers
 )
+
+
+#: Actions that put text into the machine. Every one of them is checked against
+#: the credential rules — including the editing paths, which is the whole reason
+#: this is a named set rather than an inline tuple.
+WRITE_KINDS: Tuple[str, ...] = ("type", "key", "hotkey", "clipboard_set", "edit_field", "skill_tool")
+
+
+def _written_text(action: "Action") -> str:
+    """The text an action is about to write, whichever shape it arrived in."""
+    if action.kind == "edit_field":
+        return str(
+            action.params.get("value")
+            if action.params.get("value") is not None
+            else action.params.get("new") or action.params.get("text") or ""
+        ).strip()
+    if action.kind == "skill_tool":
+        args = action.params.get("args")
+        if isinstance(args, dict):
+            return " ".join(str(value) for value in args.values() if isinstance(value, (str, int, float))).strip()
+        return str(args or "").strip()
+    return action.text.strip()
 
 
 class RiskLevel(IntEnum):
@@ -133,10 +155,16 @@ class SafetyGuard:
         *,
         confirm: Optional[Callable[[str, float], bool]] = None,
         announce: Optional[Callable[[str], None]] = None,
+        tool_writes: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
         self.settings = settings or SafetySettings()
         self.confirm = confirm
         self.announce = announce
+        #: ``(skill_id, tool_name) -> does this tool change data?``  Set by the
+        #: app once the packs are loaded. A REST call that edits a work item is
+        #: exactly as consequential as a click that edits it, so it must reach
+        #: the human the same way: through this guard.
+        self.tool_writes = tool_writes
         patterns: Sequence[str] = tuple(self.settings.blocked_patterns) or DEFAULT_BLOCKED_PATTERNS
         self._blocked = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
         keywords: Sequence[str] = tuple(self.settings.destructive_keywords) or DEFAULT_DESTRUCTIVE_KEYWORDS
@@ -161,7 +189,18 @@ class SafetyGuard:
                 raw_text,
             ]
         )
-        lowered = haystack.lower()
+        # The destructive-keyword scan deliberately excludes the action *kind*.
+        # The kind is a category label, not intent, and substring matching on it
+        # produced a ridiculous false positive: "skill_tool" contains "kill", so
+        # every knowledge-pack call looked like a destructive action.
+        lowered = " ".join(
+            [
+                " ".join(str(value) for value in action.params.values() if isinstance(value, (str, int, float))),
+                action.note,
+                context,
+                raw_text,
+            ]
+        ).lower()
 
         # 1. Hard refusals.
         if action.kind == "shell":
@@ -189,7 +228,10 @@ class SafetyGuard:
         # 2FA code").  Typing an email or a username into a login page is *not*
         # refused — that is an ordinary assistant job, and refusing it would make
         # Naveed useless for exactly the tasks people want.
-        if action.kind in ("type", "key", "hotkey", "clipboard_set") and self.settings.block_credential_entry:
+        # `edit_field` and `skill_tool` are write paths added later and must be
+        # covered by the same rule: a secret must never reach a field just because
+        # it travelled as a read-modify-write, a paste, or a knowledge-pack tool.
+        if action.kind in WRITE_KINDS and self.settings.block_credential_entry:
             credential_field = ""
             for pattern in self._credential:
                 match = pattern.search(context) or pattern.search(action.note)
@@ -203,26 +245,31 @@ class SafetyGuard:
                 or PASSWORD_INTENT.search(action.params.get("label") or "")
             )
 
+            # Whatever is about to be written, in one place, so a new write path
+            # cannot quietly skip the check (which is exactly what happened when
+            # `edit_field` was added and only `type` was guarded).
+            text = _written_text(action)
+
             value_is_secret = False
-            if action.kind in ("type", "clipboard_set"):
-                text = action.text.strip()
+            if text:
                 for pattern in self._secretish:
                     if pattern.match(text):
                         value_is_secret = True
                         break
-                # A bare 4-8 digit value in a sign-in window is a PIN, not prose.
-                if not value_is_secret and credential_field and re.fullmatch(r"\d{4,8}", text or ""):
-                    value_is_secret = True
-            if intent and action.kind == "type":
+            # A bare 4-8 digit value going into a *labelled* credential field is a
+            # PIN, not prose.
+            if not value_is_secret and credential_field and re.fullmatch(r"\d{4,8}", text or ""):
+                value_is_secret = True
+            if intent and action.kind in ("type", "edit_field"):
                 value_is_secret = True
 
-            if value_is_secret or (intent and action.kind in ("key", "hotkey", "clipboard_set")):
+            if value_is_secret or (intent and action.kind in ("key", "hotkey", "clipboard_set", "skill_tool")):
                 return self._finalize(
                     action,
                     SafetyDecision(
                         level=RiskLevel.BLOCKED,
                         reason=(
-                            "this is a password, code, key or similar secret, and Naveed will not type "
+                            "this is a password, code, key or similar secret, and Naveed will not write "
                             "secrets — please type this one yourself"
                         ),
                         matched=credential_field or "secret",
@@ -244,6 +291,26 @@ class SafetyGuard:
                         reason=f"it could be destructive (“{keyword}”)",
                         matched=keyword,
                         needs_confirmation=self.settings.confirm_destructive,
+                    ),
+                )
+
+        # 4b. A knowledge-pack tool that changes data gets the same confirmation
+        # a destructive click would. The tool cannot run before this passes.
+        if action.kind == "skill_tool" and self.settings.confirm_destructive and self.tool_writes is not None:
+            skill_id = str(action.params.get("skill") or "")
+            tool_name = str(action.params.get("tool") or "")
+            try:
+                writes = bool(self.tool_writes(skill_id, tool_name))
+            except Exception:
+                writes = True   # an unknown tool is treated as one that writes
+            if writes:
+                return self._finalize(
+                    action,
+                    SafetyDecision(
+                        level=RiskLevel.DESTRUCTIVE,
+                        reason=f"it changes data through {skill_id or 'a tool'}",
+                        matched=tool_name,
+                        needs_confirmation=True,
                     ),
                 )
 
