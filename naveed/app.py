@@ -92,7 +92,7 @@ class NaveedApp:
             mark = "✓" if reachable else "✗"
             print(f"              {mark} {report.get('model_probe', '')}", file=stream)
             if not reachable:
-                print("              start it, or pick another provider: python -m naveed --setup --provider openai", file=stream)
+                print("              start it, or go local: python -m naveed --setup --provider ollama", file=stream)
         if report["ui"]:
             # "PySide6 is importable" and "a window can open" are different
             # questions: a package whose libGL.so.1 is missing imports fine and

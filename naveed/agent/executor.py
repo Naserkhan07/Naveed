@@ -135,11 +135,13 @@ def model_unreachable_message(config: Any, detail: str = "") -> str:
             "Start it, or point me at a hosted model instead:"
         )
         lines.append("  ollama serve          # then: ollama pull qwen2.5vl:7b")
-        lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
+        lines.append("  python -m naveed --setup --provider lmstudio   # another local server")
+        lines.append("  python -m naveed --api URL --model NAME        # any endpoint; local needs no token")
     else:
         lines.append("That API may be down, or the token it wants may be wrong:")
         lines.append("  python -m naveed --check")
-        lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
+        lines.append("  python -m naveed --setup --provider openai --token YOUR_TOKEN   # or openrouter / groq")
+        lines.append("  python -m naveed --setup --provider ollama     # or go local: no token exists")
     if detail:
         lines.append(f"(the server said: {detail})")
     return "\n".join(lines)
