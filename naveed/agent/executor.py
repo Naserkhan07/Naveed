@@ -119,6 +119,32 @@ class Task:
         ]
 
 
+def model_unreachable_message(config: Any, detail: str = "") -> str:
+    """What to say when the model endpoint is not answering.
+
+    Written for the two ways this actually happens: a local server that is not
+    running (the common one — the address is configured, so nothing complains
+    until a task starts) and a hosted key that is wrong or rate-limited.
+    """
+    base = str(getattr(config.llm, "base_url", "") or "")
+    local = any(host in base for host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
+    lines = [f"I could not reach my model at {base or 'the configured endpoint'}."]
+    if local:
+        lines.append(
+            "That address is a server on this machine, and nothing is answering on it. "
+            "Start it, or point me at a hosted model instead:"
+        )
+        lines.append("  ollama serve          # then: ollama pull qwen2.5vl:7b")
+        lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
+    else:
+        lines.append("The key may be wrong, expired or out of quota:")
+        lines.append("  python -m naveed --check")
+        lines.append("  python -m naveed --setup --provider openai     # or openrouter / groq")
+    if detail:
+        lines.append(f"(the server said: {detail})")
+    return "\n".join(lines)
+
+
 class NaveedAgent:
     """Runs tasks against the live screen."""
 
@@ -353,7 +379,15 @@ class NaveedAgent:
                     task.status = TaskStatus.CANCELLED
                     break
                 if plan is None:
+                    # `_plan_step` returns None for two very different reasons: the
+                    # screen could not be captured, or the model could not be
+                    # reached (which it has already explained, complete with the
+                    # address and how to start a server). Do not paper over the
+                    # second one with a capture message.
+                    if task.status is TaskStatus.FAILED and task.error:
+                        break
                     task.status = TaskStatus.FAILED
+                    task.error = task.error or "the screen could not be captured"
                     task.result = "I could not see the screen just now."
                     break
 
@@ -434,6 +468,16 @@ class NaveedAgent:
         except Exception as error:
             logger.exception("planner call failed")
             self._safe(self.on_say, f"The model call failed: {error}")
+            return None, frame
+        if getattr(plan, "error", ""):
+            # A model that cannot be reached is not a question for the user: fail
+            # the task now, saying which server is not answering and how to start
+            # one, instead of waiting for a reply that cannot help.
+            task.status = TaskStatus.FAILED
+            task.error = plan.error
+            task.result = model_unreachable_message(self.config, plan.error)
+            self._emit_status("error", task.result)
+            self._safe(self.on_say, task.result)
             return None, frame
         return plan, frame
 

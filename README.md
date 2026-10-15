@@ -116,18 +116,34 @@ the panel's gear icon. See [`examples/config.env.example`](examples/config.env.e
 ### 3. Run it
 
 ```bash
-python -m naveed
+python main.py
 ```
 
-The mascot appears slightly below the middle of your screen, floating above
-whatever you have open. **Click it and talk**, press `Ctrl+Alt+Space`, or double-click
-it for the panel and type.
+(The launcher is a thin wrapper: it finds Naveed, writes a first config when a
+model is obviously available, tells you what is missing if anything is, and then
+starts the app. `python -m naveed` does the same thing without the first-run
+checks.)
+
+The bot appears **centred just below your camera**, floating above whatever you
+have open, and stays where you drag it. **Click it** to open the panel and tell it
+what to do — if a microphone is available it also starts listening — press
+`Ctrl+Alt+Space` from anywhere, or double-click for the panel alone.
 
 ### 4. Check everything
 
 ```bash
-python -m naveed --check          # what is installed, what works, what is missing
-python -m naveed --portrait me.png  # render the mascot sheet + panel mock, no GUI needed
+python main.py --check            # what is installed, what works, what is missing
+python main.py --portrait me.png  # render the mascot sheet + panel mock, no GUI needed
+```
+
+`--check` asks the model endpoint whether it is **answering**, not merely
+configured — a local server that is not running is the most common reason a task
+dies, and it now says so up front:
+
+```
+model       qwen2.5vl:7b @ 127.0.0.1:11434  ✓ configured
+            ✗ nothing is answering at http://127.0.0.1:11434/v1 (Connection refused)
+            start it, or pick another provider: python -m naveed --setup --provider openai
 ```
 
 ---
@@ -136,7 +152,7 @@ python -m naveed --portrait me.png  # render the mascot sheet + panel mock, no G
 
 | Action | What happens |
 |---|---|
-| **Click the mascot** | Starts listening. Speak; a pause ends your sentence. |
+| **Click the mascot** | Opens the panel, and starts listening when a microphone is available (otherwise the caret lands in the task box). |
 | **`Ctrl+Alt+Space`** | The same thing from anywhere (configurable). |
 | **Drag the mascot** | Moves it anywhere; the panel follows if it is open. |
 | **Double-click it** | Opens/closes the control panel. |
@@ -146,11 +162,44 @@ python -m naveed --portrait me.png  # render the mascot sheet + panel mock, no G
 | **Panel shortcuts** | *Look at screen, Summarise, Screenshot, Explain error, Write for me, Clean up, Translate, Automate.* |
 | **Panel input box** | Type a task. When Naveed asks a question, answers here go straight back to it. |
 | **Tray icon** | Everything above without the mascot being visible. |
+| **A browser** | The same bot is served at `http://127.0.0.1:8765` — a text box, a scrollback, and the quick actions. See [The browser](#the-browser). |
+
+### The browser
+
+Naveed is a desktop overlay first, but the same bot is also served over HTTP, so
+you can type to it in a browser — or from a tablet on the same network:
+
+```bash
+python -m naveed                 # mascot on screen *and* the page at :8765
+python -m naveed --serve         # the page only, no window, works without PySide6
+python -m naveed --serve --open-browser     # …and open it for me
+python -m naveed --serve --host 0.0.0.0     # reachable from your LAN (token required)
+python -m naveed --no-serve      # the mascot, without the page
+```
+
+Both front ends drive **one** bot when they run together: the page hands its task to
+the same bridge the mascot uses, so a task typed in the browser makes the mascot
+work, and its answers appear in both places. `--serve` on its own runs a normal
+headless Naveed with the page as its window; it is the one mode that needs nothing
+beyond the standard library.
+
+The page shows the same things the panel does — the model and whether it answers,
+what it can capture and control, the routines it has been taught — plus a running
+log of everything it did, a box for answering its questions, the quick actions as
+chips, and a *Listen* button when the browser has speech recognition. Nothing is
+loaded from the internet, so it renders identically on an offline machine.
+
+Loopback needs no token. Bind wider (`--host 0.0.0.0`) and every request needs the
+token printed at startup, because an agent that can type into your window is not
+something to leave open by accident; `--no-token` exists for a container port on a
+network you already trust. [`docs/BROWSER.md`](docs/BROWSER.md) has the small HTTP
+API (`/api/state`, `/api/task`, …) and how to script it or embed it.
 
 ### Command line
 
 ```bash
 python -m naveed                          # the floating companion (normal use)
+python -m naveed --serve                  # the same bot as a local web page
 python -m naveed -p "open notepad and type hello"   # one task, headless, prints each step
 python -m naveed --watch                  # watch the screen and print the world model
 python -m naveed --screenshot             # one capture, prints the path
@@ -166,7 +215,7 @@ python -m naveed --teach release-my-item --teach-seconds 45   # learn one by dem
 python -m naveed --run-recipe release-my-item --arg work_item_id=PROJ-1042 --dry-run
 ```
 
-Two guides go with those flags:
+Two guides go with the taught-knowledge flags:
 [`docs/EDITING.md`](docs/EDITING.md) for changing text that is already on screen,
 and [`docs/POLARION.md`](docs/POLARION.md) for the Polarion pack and how training
 by demonstration works (and what it deliberately is not).
@@ -290,7 +339,7 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 220 tests, no display required
+python -m unittest discover -s tests -v      # 282 tests, no display required
 ```
 
 | File | Covers |
@@ -298,7 +347,9 @@ python -m unittest discover -s tests -v      # 220 tests, no display required
 | `tests/test_screen.py` | capture recovery chain, empty-frame detection, diff thresholds, monitor geometry + HiDPI, retention/pruning |
 | `tests/test_control.py` | action normalisation, key aliases/hotkeys, the safety guard, coordinate mapping, dry-run execution |
 | `tests/test_agent.py` | the task loop: success, verification, no-change circuit breaker, asking, cancelling, budgets |
-| `tests/test_overlay.py` | the lazy-import promise (checked in a fresh interpreter), theme geometry, animation, icons |
+| `tests/test_overlay.py` | the lazy-import promise (checked in a fresh interpreter), theme geometry, animation, icons, the Qt startup order, placement/remembered position, cross-thread callbacks |
+| `tests/test_launcher.py` | `main.py`: finding Naveed from any directory, the first-run hints, writing a config only when a model is reachable, passing flags through to the CLI |
+| `tests/test_server.py` | the browser front end: every endpoint, the page's relative-URL rule, the event log the page polls, the token rule for a non-loopback host, port fallback, and the overlay sharing one bridge with the browser |
 | `tests/test_visual.py` | pixel assertions on the generated art: palette, symmetry, expressions, transparency, previews |
 | `tests/test_editing.py` | the edit engine: `apply_edit` as a pure function (every operation, anchors that repeat or are missing), the clipboard read path, write-and-verify, honest failure on a locked field |
 | `tests/test_skills.py` | knowledge packs: matching and prompt-budget injection, recipe rendering and expansion, record → distil → replay, the Polarion REST tools with the network stubbed, config-file keys |
@@ -309,7 +360,9 @@ python -m unittest discover -s tests -v      # 220 tests, no display required
 naveed/
   lazy.py            the lazy-import rule and its errors
   config.py          settings model + config.env
-  app.py             the app façade (overlay / task / watch / setup modes)
+  app.py             the app façade (overlay / task / serve / watch / setup modes)
+  server.py          the HTTP/browser front end (standard library only)
+  webui.py           the page it serves: one string, no external assets
   screen/            capture, capture recovery, monitors, focus, diff, world model, watcher
   control/           keys, input backends, action vocabulary, safety guard, OS actions, OCR
   agent/             LLM client, prompts, planner, task loop, UI bridge
@@ -318,6 +371,7 @@ naveed/
   render/            canvas protocol + Pillow and Qt back-ends, previews
   skills/            knowledge packs, the Polarion pack, the recorder/distiller, learned routines
 docs/                architecture, screen watching, actions, safety, editing, Polarion, troubleshooting
+main.py              the launcher (double-click this one)
 scripts/             install.sh, install.ps1
 tests/               the suite above
 examples/            a fully commented config.env

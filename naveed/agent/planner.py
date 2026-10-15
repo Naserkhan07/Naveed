@@ -91,9 +91,13 @@ class Planner:
             reply = self.client.chat(messages, json_mode=True)
         except LLMError as error:
             self.last_error = str(error)
+            # Not an `ask`: a refused connection cannot be answered by a human, and
+            # the loop would sit waiting for a reply that can never help. The task
+            # fails now, with the reason and a way to fix it.
             return ActionPlan(
                 summary="I could not reach the model",
-                actions=[Action(kind="ask", params={"question": str(error)})],
+                error=str(error),
+                actions=[],
             )
 
         self.last_reply_text = reply.text

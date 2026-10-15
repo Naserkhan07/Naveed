@@ -22,6 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from naveed.agent.executor import NaveedAgent, Task, TaskStatus
+from naveed.control.actions import ActionPlan
 from naveed.agent.llm import extract_json
 from naveed.agent.planner import Planner
 from naveed.config import load_config
@@ -321,12 +322,74 @@ class HeadlessRunTests(unittest.TestCase):
         app.bridge = None
 
         out, err = io_module.StringIO(), io_module.StringIO()
-        with mock.patch.object(bridge_module, "AgentBridge", DeadBridge):
+        with mock.patch.object(bridge_module, "AgentBridge", DeadBridge), mock.patch.object(
+            NaveedApp, "_model_reachability", return_value=(True, "")
+        ):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = NaveedApp.run_task(app, "open notepad and type hello")
         self.assertEqual(code, 1)
         self.assertIn("no task ran", err.getvalue())
         self.assertIn("refused the connection", err.getvalue(), "the user must be told why")
+
+    def test_run_task_refuses_to_start_against_a_dead_model(self):
+        """The exact case from the field: Ollama not running, address configured.
+
+        The run must fail *immediately*, saying which address is silent and how to
+        start a server — not plan for 45 seconds, not ask a question nobody can
+        answer.
+        """
+        import contextlib
+        import io as io_module
+        from unittest import mock
+
+        from naveed.app import NaveedApp
+
+        app = object.__new__(NaveedApp)
+        app.config = load_config()
+        app.config.llm.base_url = "http://127.0.0.1:11434/v1"
+        app.config.llm.model = "qwen2.5vl:7b"
+        app.bridge = None
+
+        err = io_module.StringIO()
+        with mock.patch.object(
+            NaveedApp, "_model_reachability", return_value=(False, "nothing is answering at http://127.0.0.1:11434/v1")
+        ), mock.patch.object(NaveedApp, "_llm_hint", return_value="I could not reach my model at http://127.0.0.1:11434/v1."):
+            with contextlib.redirect_stdout(io_module.StringIO()), contextlib.redirect_stderr(err):
+                code = NaveedApp.run_task(app, "open notepad and type hello")
+        self.assertEqual(code, 1)
+        self.assertIn("127.0.0.1:11434", err.getvalue())
+
+    def test_a_dead_model_fails_the_task_with_instructions(self):
+        """A model error plan is not an `ask`: it stops the loop and says why."""
+        agent, watcher, events, config = make_agent()
+        config.llm.base_url = "http://127.0.0.1:11434/v1"   # the local-server case
+        config.llm.model = "qwen2.5vl:7b"
+        # Simulate what the planner does when the endpoint refuses the connection.
+        agent._planner = ScriptedPlanner([{}])
+        agent.planner.plan = lambda *a, **k: ActionPlan(
+            summary="I could not reach the model",
+            error="nothing is answering at http://127.0.0.1:11434/v1",
+        )
+
+        task = agent.run("open notepad")
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        self.assertIn("127.0.0.1:11434", task.result)
+        self.assertIn("ollama", task.result.lower())
+        self.assertNotIn("question", (task.result or "").lower())
+
+    def test_the_unreachable_message_knows_local_from_hosted(self):
+        from naveed.agent.executor import model_unreachable_message
+
+        config = load_config()
+        config.llm.base_url = "http://127.0.0.1:11434/v1"
+        local = model_unreachable_message(config, "connection refused")
+        self.assertIn("ollama serve", local)
+        self.assertIn("connection refused", local)
+
+        config.llm.base_url = "https://api.openai.com/v1"
+        hosted = model_unreachable_message(config, "401")
+        self.assertNotIn("ollama serve", hosted)
+        self.assertIn("--check", hosted)
 
 
 if __name__ == "__main__":

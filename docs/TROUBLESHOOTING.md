@@ -29,6 +29,12 @@ answer to "why does nothing happen when it clicks?")
 
 ## The mascot does not appear
 
+Start with the launcher, which checks before it opens a window:
+
+```bash
+python main.py          # prints what is missing, then starts the bot
+```
+
 | Symptom | Cause and fix |
 |---|---|
 | `--check` says *interface: not installed* | `pip install "naveed[ui]"` |
@@ -36,6 +42,54 @@ answer to "why does nothing happen when it clicks?")
 | Runs, but nothing shows on Linux/Wayland | Wayland hides global windows by design. Use XWayland (`QT_QPA_PLATFORM=xcb`), or your compositor's "always on top" rule. |
 | It is behind every window | Another app's always-on-top rule is winning. `OVERLAY_ALWAYS_ON_TOP=true` plus the panel's *pin* toggle re-applies it. On macOS, use full-screen or *Do Not Disturb* rather than a full-screen app's own space. |
 | No tray icon | Some desktops need `libayatana-appindicator3-1`. The tray is optional — the mascot and the hotkey do everything the menu does. |
+| `QWidget: Must construct a QApplication before a QWidget` | Fixed: the reusable `QApplication` is now created before any widget. If you see it in an old checkout, `git pull` — the mascot could never appear with that bug present. |
+| It appeared somewhere off screen | `OVERLAY_ANCHOR=below_camera` (the default) puts it centred under the webcam bezel. A remembered position from a monitor that is no longer attached is clamped back on screen; `OVERLAY_REMEMBER_POSITION=false` forgets it. |
+
+## The browser page
+
+The same bot is served at `http://127.0.0.1:8765` (`python -m naveed --serve` for
+the page on its own). [docs/BROWSER.md](BROWSER.md) is the full picture; the
+failures worth knowing:
+
+| Symptom | Cause and fix |
+|---|---|
+| The page loads but every action says *lost the connection* | The server stopped. Restart it; the page reconnects on its own. |
+| `401` on everything | You bound beyond loopback (`--host 0.0.0.0`), so the token printed at startup is required: `http://host:8765/?token=…`. `--no-token` only for a network you trust. |
+| The port is not the one you configured | It was taken, and the bot picked a free one instead of refusing to start. The URL it printed is the right one. |
+| *Show mascot* does nothing | It starts `python -m naveed --no-serve` as a second process; run that by hand to see the error. Without PySide6 it reports the install line instead. |
+| It refuses every task with the model message | Deliberate: the page opens even when the model is dead, and says why instead of failing later. |
+
+## "I could not reach my model"
+
+`--check` asks the endpoint whether it *answers*, so this is diagnosable before a
+task fails:
+
+```bash
+python main.py --check
+#   model       qwen2.5vl:7b @ 127.0.0.1:11434  ✓ configured
+#               ✗ nothing is answering at http://127.0.0.1:11434/v1 (Connection refused)
+```
+
+| What it says | What to do |
+|---|---|
+| *nothing is answering at http://127.0.0.1:…* | The local server is not running: `ollama serve`, then `ollama pull qwen2.5vl:7b`. |
+| *is answering, but 'x' is not in its model list* | The server is up with different models — `ollama list`, then `--setup --provider ollama --model <name>`. |
+| *rejected the key (HTTP 401)* | Wrong or expired API key: `python -m naveed --setup --provider openai --force`. |
+| *did not answer in 1.5s* | Slow or unreachable host (a VPN, a firewall, a sleeping machine). |
+
+A task that cannot reach the model now stops immediately and says so, instead of
+asking you a question nobody can answer.
+
+## I clicked the bot and nothing happened
+
+The panel should appear, and the caret should land in the task box (or listening
+starts, when a microphone is available). If neither happens:
+
+* the panel may have opened off screen — drag the mascot towards the middle and
+  click again, or `OVERLAY_REMEMBER_POSITION=false` to reset its position;
+* with no input backend (`--check` says *input: backends: none*) the click still
+  works but nothing can be typed into another app: `pip install "naveed[input]"`;
+* if it says *"I cannot hear you"*, there is no microphone — typing works the same.
 
 ## The agent clicks in the wrong place
 

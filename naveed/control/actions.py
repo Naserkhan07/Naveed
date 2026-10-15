@@ -264,6 +264,10 @@ class ActionPlan:
     understanding: str = ""
     done: bool = False
     question: str = ""
+    #: set when the *model* could not be reached at all. A dead endpoint is not a
+    #: question for the user — nobody can answer "connection refused" — so the
+    #: task fails immediately with this message instead of waiting for a reply.
+    error: str = ""
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -282,6 +286,7 @@ class ActionPlan:
             "understanding": self.understanding,
             "done": self.done,
             "question": self.question,
+            "error": self.error,
             "actions": [action.to_dict() for action in self.actions],
         }
 

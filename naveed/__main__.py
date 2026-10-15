@@ -3,6 +3,7 @@
 Modes
 -----
 ``python -m naveed``                      start the floating companion
+``python -m naveed --serve``              the same bot in a browser, no GUI
 ``python -m naveed --prompt "open X"``    run one task headlessly
 ``python -m naveed --watch``              watch the screen, print a timeline
 ``python -m naveed --check``              report what is installed/possible
@@ -40,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--listen", nargs="?", const=12.0, type=float, metavar="SECONDS", help="record one voice command and print the text")
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with the offline voice")
     parser.add_argument("--screenshot", action="store_true", help="take one screenshot and print the path")
+
+    web = parser.add_argument_group("the browser front end")
+    web.add_argument("--serve", action="store_true", help="serve the bot over HTTP only (no mascot, works without PySide6)")
+    web.add_argument("--no-serve", action="store_true", help="start the mascot without the browser front end")
+    web.add_argument("--host", metavar="HOST", help="interface to listen on (default 127.0.0.1; 0.0.0.0 needs the printed token)")
+    web.add_argument("--port", type=int, metavar="PORT", help="port for the browser front end (default 8765, or the next free one)")
+    web.add_argument("--open-browser", action="store_true", help="open the page in your browser once it is up")
+    web.add_argument("--no-token", action="store_true", help="do not require the token when listening beyond loopback")
 
     trained = parser.add_argument_group("taught knowledge (Polarion and friends)")
     trained.add_argument("--skills", action="store_true", help="list the knowledge packs Naveed has been taught")
@@ -117,6 +126,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["safety.dry_run"] = True
     if getattr(args, "no_skills", False):
         overrides["skills.inject"] = False
+    if getattr(args, "no_token", False):
+        overrides["web.token"] = False
     if args.allow_shell:
         overrides["safety.allow_shell"] = True
     if args.debug:
@@ -168,7 +179,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return app.export_training(args.export_training)
     if args.prompt:
         return app.run_task(args.prompt)
-    return app.run_overlay()
+    if args.serve:
+        return app.run_server(host=args.host, port=args.port, open_browser=args.open_browser)
+    return app.run_overlay(
+        serve=not args.no_serve,
+        host=args.host,
+        port=args.port,
+        open_browser=args.open_browser,
+    )
 
 
 if __name__ == "__main__":

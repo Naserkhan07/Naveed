@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .. import lazy
 from ..config import LLMSettings
@@ -245,6 +245,57 @@ class LLMClient:
         data = self._post(payload, timeout=timeout or self.settings.timeout, json_mode=json_mode)
         latency = time.time() - started
         return self._parse_reply(data, latency)
+
+    def probe(self, timeout: float = 1.5) -> Tuple[bool, str]:
+        """Is something *actually* answering at the configured endpoint?
+
+        ``configured`` only means a base URL and a model name are set, and that
+        difference has bitten this project twice: the report said "✓ configured"
+        for an Ollama address where nothing was listening, and the user only found
+        out when a task died. This asks the server (``GET /models``, the standard
+        OpenAI-compatible route) and, when the server lists its models, says
+        whether the configured one is among them.
+
+        Returns ``(ok, sentence)`` and never raises.
+        """
+        if not self.settings.configured:
+            return False, "no model configured"
+        base = str(self.settings.base_url or "").rstrip("/")
+        if not base:
+            return False, "no base URL configured"
+        request = urllib.request.Request(f"{base}/models", method="GET")
+        if self.settings.api_key:
+            request.add_header("Authorization", f"Bearer {self.settings.api_key}")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+                body = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                return False, f"{base} answered but rejected the key (HTTP {error.code})"
+            if error.code in (404, 405):
+                return True, f"{base} is answering (it has no model list to check)"
+            return False, f"{base} answered with HTTP {error.code}"
+        except urllib.error.URLError as error:
+            return False, f"nothing is answering at {base} ({error.reason})"
+        except (TimeoutError, OSError) as error:
+            return False, f"{base} did not answer in {timeout}s ({type(error).__name__})"
+
+        names: List[str] = []
+        try:
+            payload = json.loads(body or "{}")
+            entries = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(entries, list):
+                names = [str(item.get("id") or item.get("name") or "") for item in entries if isinstance(item, dict)]
+        except ValueError:
+            names = []
+        wanted = str(self.settings.model or "")
+        if names and wanted and wanted not in names:
+            short = ", ".join(name for name in names[:6] if name)
+            return True, (
+                f"{base} is answering, but {wanted!r} is not in its model list "
+                f"(it has: {short}). Pull it, or change LLM_MODEL."
+            )
+        return True, f"{base} is answering" + (f" and has {wanted}" if names else "")
 
     def complete(
         self,

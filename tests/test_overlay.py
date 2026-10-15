@@ -148,6 +148,7 @@ class OverlayStartupTests(unittest.TestCase):
         def build():
             calls.append("build")
             app._qt = {"QtCore": SimpleNamespace(Signal=None), "QtWidgets": FakeQtWidgets}
+            app.application = FakeQApplication.instance()
 
         app.config = SimpleNamespace(overlay=SimpleNamespace(start_hidden=False, show_panel_on_start=False, size=168),
                                      voice=SimpleNamespace(tts="none"))
@@ -175,6 +176,77 @@ class OverlayStartupTests(unittest.TestCase):
         self.assertEqual(calls[0], "build", "build() populates _qt and must come first")
         self.assertIn("qt-instance", calls)
 
+    def test_build_makes_the_application_before_any_widget(self):
+        """Qt's rule: no QWidget before a QApplication, or nothing is drawn.
+
+        Windows printed "QWidget: Must construct a QApplication before a QWidget"
+        and the mascot silently never appeared, because the widgets were built
+        first and `QApplication.instance()` only ever *looks* for one.
+        """
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from naveed.overlay.bridge import OverlayApp
+
+        created = []
+
+        class FakeQApplication:
+            def __init__(self, argv):
+                created.append("created")
+
+            @staticmethod
+            def instance():
+                return None
+
+            def setApplicationName(self, name):
+                pass
+
+            setApplicationDisplayName = setApplicationName
+            setQuitOnLastWindowClosed = setApplicationName
+
+        class FakeQtWidgets:
+            QApplication = FakeQApplication
+
+        class FakeQtCore:
+            Signal = None
+            QTimer = object
+
+        def load(name, **kwargs):
+            return FakeQtWidgets if name.endswith("QtWidgets") else FakeQtCore
+
+        app = object.__new__(OverlayApp)
+        app._qt = {}
+        app.voice = None
+        app.tray = None
+        app.hotkeys = None
+        app._questions = []
+        app._last_spoken = ""
+
+        class FakeWidget:
+            def build(self):
+                # Every real build() constructs a QWidget, so this is the moment the
+                # QApplication must already exist.
+                assert created, "a widget was built before the QApplication"
+                return self
+
+            def __getattr__(self, item):
+                return lambda *a, **k: None
+
+        app.mascot = FakeWidget()
+        app.panel = FakeWidget()
+        app.config = SimpleNamespace(
+            overlay=SimpleNamespace(always_on_top=True, hotkey="", tray=False, size=168, padding=46, start_hidden=True),
+            voice=SimpleNamespace(tts="none"),
+        )
+
+        with mock.patch("naveed.overlay.bridge.lazy.load", side_effect=load), mock.patch.object(
+            OverlayApp, "_wire_signals", return_value=None
+        ):
+            app.build()
+
+        self.assertEqual(created, ["created"], "exactly one QApplication")
+        self.assertIsNotNone(app.application)
+
     def test_run_does_not_die_when_qt_was_never_loaded(self):
         """The failure mode the user hit: no Qt in `_qt`, KeyError, mascot never appears."""
         calls = []
@@ -186,6 +258,211 @@ class OverlayStartupTests(unittest.TestCase):
             # lazy.load) is what the user sees, not a KeyError from an empty dict.
             app.run()
         self.assertEqual(calls, ["build"])
+
+
+class PanelPlacementTests(unittest.TestCase):
+    """The panel must never sit on top of the mascot it belongs to.
+
+    The mascot now starts at the top of the screen ("below the camera"), so the
+    panel's default anchor — above it — has nowhere to go. Clamping the panel up
+    there stacked it on the character, which reads as a broken app.
+    """
+
+    def panel(self):
+        from unittest import mock
+
+        from naveed.config import load_config
+        from naveed.overlay.panel import ControlPanel
+
+        config = load_config()
+        panel = ControlPanel(
+            config,
+            on_command=lambda text: None, on_quick=lambda key: None, on_listen=lambda: None,
+            on_stop=lambda: None, on_answer=lambda text: None, on_confirm=lambda *a: None,
+            on_settings=lambda: None, on_hide=lambda: None, on_quit=lambda: None,
+            on_toggle_mute=lambda muted: None,
+        )
+        patcher = mock.patch("naveed.overlay.window._primary_screen_size", return_value=(1920, 1080))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return panel, config
+
+    def test_it_flips_below_when_there_is_no_room_above(self):
+        from naveed.overlay.panel import PANEL
+
+        panel, config = self.panel()
+        mascot_y, mascot_size = 37, 168          # the below-camera default
+        x, y = panel.anchor_position((876, mascot_y, mascot_size))
+        self.assertGreaterEqual(y, mascot_y + mascot_size, "the panel must clear the mascot")
+        self.assertLessEqual(y + PANEL.height, 1080 - 8)
+
+    def test_it_still_prefers_above_when_there_is_room(self):
+        from naveed.overlay.panel import PANEL
+
+        panel, config = self.panel()
+        x, y = panel.anchor_position((876, 600, 168))
+        self.assertLess(y + PANEL.height, 600, "a panel in the middle of the screen still opens above")
+
+    def test_it_never_leaves_the_screen(self):
+        from naveed.overlay.panel import PANEL
+
+        panel, config = self.panel()
+        for mascot in ((0, 8, 168), (876, 37, 168), (1752, 900, 168), (960, 540, 168)):
+            x, y = panel.anchor_position(mascot)
+            self.assertGreaterEqual(x, 8, mascot)
+            self.assertGreaterEqual(y, 8, mascot)
+            self.assertLessEqual(x + PANEL.width, 1920 - 8, mascot)
+            self.assertLessEqual(y + PANEL.height, 1080 - 8, mascot)
+
+
+class CrossThreadTests(unittest.TestCase):
+    """Callbacks that arrive off the GUI thread must hop back onto it.
+
+    pynput's listener and the speech threads call straight into the overlay; Qt
+    widgets may only be touched from the thread that owns them, which fails
+    quietly on Linux and crashes on Windows.
+    """
+
+    def test_the_global_hotkey_goes_through_a_signal(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from naveed.overlay.bridge import OverlayApp
+
+        app = object.__new__(OverlayApp)
+        emitted = []
+        app._relay = SimpleNamespace(wake=SimpleNamespace(emit=lambda: emitted.append("wake")))
+        with mock.patch.object(OverlayApp, "_on_mascot_click") as direct:
+            OverlayApp._on_hotkey(app)
+        self.assertEqual(emitted, ["wake"], "the hotkey must not touch widgets from pynput's thread")
+        self.assertFalse(direct.called)
+
+    def test_voice_state_goes_through_a_signal(self):
+        from types import SimpleNamespace
+
+        from naveed.overlay.bridge import OverlayApp
+
+        app = object.__new__(OverlayApp)
+        seen = []
+        app._relay = SimpleNamespace(
+            voice_state=SimpleNamespace(emit=lambda state: seen.append(state)),
+            level=SimpleNamespace(emit=lambda level: seen.append(round(level, 2))),
+        )
+        app.mascot = SimpleNamespace(set_state=lambda state: seen.append(f"direct:{state}"))
+        app.panel = SimpleNamespace(set_state_expression=lambda state: None)
+        OverlayApp._on_voice_state(app, "listening")
+        OverlayApp._on_voice_level(app, 0.42)
+        self.assertEqual(seen, ["listening", 0.42], "no widget may be touched from the speech thread")
+
+
+class PlacementTests(unittest.TestCase):
+    """Where the bot appears, and where it comes back.
+
+    "Below the camera" is the default because the alternative — the middle of the
+    screen — lands on whatever the person is reading, and the first thing they do
+    is drag it away. Everything here is pure arithmetic plus two small files.
+    """
+
+    def overlay(self, **kwargs):
+        from types import SimpleNamespace
+
+        defaults = dict(size=168, anchor="below_camera", remember_position=True, x=None, y=None, offset_from_middle=0.16)
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_the_default_is_centred_just_under_the_camera(self):
+        from naveed.overlay.placement import resolve_start_position
+
+        x, y = resolve_start_position(self.overlay(), size=168, screen_width=1920, screen_height=1080)
+        self.assertEqual(x, 1920 // 2 - 84, "centred horizontally")
+        self.assertLess(y, 100, "near the top of the screen, under the webcam bezel")
+        self.assertGreater(y, 0)
+
+    def test_the_old_middle_behaviour_is_still_a_choice(self):
+        from naveed.overlay.placement import resolve_start_position
+
+        _, y = resolve_start_position(self.overlay(anchor="middle"), size=168, screen_width=1920, screen_height=1080)
+        self.assertGreater(y, 500, "the middle anchor still means the middle")
+
+    def test_every_anchor_stays_on_screen(self):
+        from naveed.overlay.placement import ANCHORS, resolve_start_position
+
+        for anchor in ANCHORS:
+            x, y = resolve_start_position(self.overlay(anchor=anchor), size=168, screen_width=1366, screen_height=768)
+            self.assertGreaterEqual(x, 0, anchor)
+            self.assertGreaterEqual(y, 0, anchor)
+            self.assertLess(x + 168, 1366, anchor)
+            self.assertLess(y + 168, 768, anchor)
+
+    def test_an_explicit_position_wins(self):
+        from naveed.overlay.placement import resolve_start_position
+
+        position = resolve_start_position(
+            self.overlay(x=400, y=300), size=168, screen_width=1920, screen_height=1080, saved=(10, 10)
+        )
+        self.assertEqual(position, (400, 300))
+
+    def test_a_position_remembered_from_a_bigger_screen_is_clamped(self):
+        from naveed.overlay.placement import resolve_start_position
+
+        x, y = resolve_start_position(
+            self.overlay(), size=168, screen_width=1280, screen_height=720, saved=(5000, 5000)
+        )
+        self.assertLessEqual(x + 168, 1280, "an off-screen position looks exactly like 'it did not start'")
+        self.assertLessEqual(y + 168, 720)
+
+    def test_a_dragged_position_is_remembered_between_runs(self):
+        import tempfile
+
+        from naveed.config import load_config
+        from naveed.overlay.placement import clear_saved_position, load_saved_position, resolve_start_position, save_position
+
+        with tempfile.TemporaryDirectory() as home:
+            config = load_config()
+            config.home = home
+            self.assertIsNone(load_saved_position(config), "nothing saved yet")
+            self.assertTrue(save_position(config, 640, 480))
+            self.assertEqual(load_saved_position(config), (640, 480))
+            start = resolve_start_position(
+                config.overlay, size=168, screen_width=1920, screen_height=1080, saved=load_saved_position(config)
+            )
+            self.assertEqual(start, (640, 480), "the bot comes back where it was put")
+            clear_saved_position(config)
+            self.assertIsNone(load_saved_position(config))
+            restored = resolve_start_position(
+                config.overlay, size=168, screen_width=1920, screen_height=1080, saved=load_saved_position(config)
+            )
+            self.assertLess(restored[1], 100, "and forgetting it returns to below the camera")
+
+    def test_remembering_can_be_switched_off(self):
+        import tempfile
+
+        from naveed.config import load_config
+        from naveed.overlay.placement import load_saved_position, save_position
+
+        with tempfile.TemporaryDirectory() as home:
+            config = load_config()
+            config.home = home
+            config.overlay.remember_position = False
+            self.assertFalse(save_position(config, 10, 20))
+            self.assertIsNone(load_saved_position(config))
+
+    def test_a_corrupt_state_file_is_ignored_rather_than_fatal(self):
+        import tempfile
+        from pathlib import Path
+
+        from naveed.config import load_config
+        from naveed.overlay.placement import load_saved_position
+
+        with tempfile.TemporaryDirectory() as home:
+            config = load_config()
+            config.home = home
+            state = Path(home) / "state"
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "overlay.json").write_text("{not json", encoding="utf-8")
+            self.assertIsNone(load_saved_position(config))
+            (state / "overlay.json").write_text('{"x": "left", "y": 2}', encoding="utf-8")
+            self.assertIsNone(load_saved_position(config))
 
 
 class ThemeTests(unittest.TestCase):

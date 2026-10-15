@@ -112,9 +112,15 @@ class OverlaySettings:
 
     size: int = 168                 # mascot body size in logical pixels
     padding: int = 46               # transparent margin for glow/shadow/rings
-    x: Optional[int] = None         # None -> centred horizontally
-    y: Optional[int] = None         # None -> slightly below the vertical midpoint
-    offset_from_middle: float = 0.16
+    x: Optional[int] = None         # None -> wherever OVERLAY_ANCHOR says
+    y: Optional[int] = None
+    #: below_camera | middle | top | bottom | top_left | top_right | bottom_right
+    #: "below_camera" is the default: centred just under the webcam bezel, where
+    #: the mascot never covers the window you are reading.
+    anchor: str = "below_camera"
+    #: come back where it was dragged to (state/overlay.json)
+    remember_position: bool = True
+    offset_from_middle: float = 0.16  # only used by the "middle" anchor
     scale_with_screen: bool = True
     always_on_top: bool = True
     click_through_when_idle: bool = False
@@ -126,6 +132,23 @@ class OverlaySettings:
     tray: bool = True
     #: Panel placement: above | below | left | right
     panel_anchor: str = "above"
+
+
+@dataclass
+class WebSettings:
+    """The browser front end (the same bot, reachable over HTTP).
+
+    Off by default *as a setting* because the launcher and the overlay turn it on
+    explicitly; ``OVERLAY``/``--no-serve`` turns it back off for a given run.
+    """
+
+    host: str = "127.0.0.1"          # loopback unless you ask for more
+    port: int = 8765                 # a busy port falls back to a free one
+    #: require the token when listening beyond loopback. Turning this off is for
+    #: a container port on a network you already trust; loopback never needs one.
+    token: bool = True
+    open_browser: bool = False       # open the page automatically with the overlay
+    enabled: bool = True             # serve alongside the mascot by default
 
 
 @dataclass
@@ -259,6 +282,7 @@ class Config:
 
     llm: LLMSettings = field(default_factory=LLMSettings)
     overlay: OverlaySettings = field(default_factory=OverlaySettings)
+    web: WebSettings = field(default_factory=WebSettings)
     capture: CaptureSettings = field(default_factory=CaptureSettings)
     safety: SafetySettings = field(default_factory=SafetySettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
@@ -550,6 +574,10 @@ def write_env_file(config: Config, path: Optional[str] = None) -> str:
         f"OVERLAY_ALWAYS_ON_TOP={'true' if config.overlay.always_on_top else 'false'}",
         f"OVERLAY_HOTKEY={config.overlay.hotkey}",
         f"OVERLAY_TRAY={'true' if config.overlay.tray else 'false'}",
+        "",
+        f"WEB_HOST={config.web.host}",
+        f"WEB_PORT={config.web.port}",
+        f"WEB_OPEN_BROWSER={'true' if config.web.open_browser else 'false'}",
         "",
         f"CAPTURE_INTERVAL={config.capture.interval}",
         f"CAPTURE_IDLE_INTERVAL={config.capture.idle_interval}",

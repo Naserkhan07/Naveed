@@ -1,13 +1,15 @@
 # Architecture
 
-Naveed is one long-lived process made of six layers. Each layer is importable
-and testable on its own, and the layers only talk through small, plain-Python
-interfaces.
+Naveed is one long-lived process made of six layers and two front ends. Each layer
+is importable and testable on its own, and the layers only talk through small,
+plain-Python interfaces.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
    │ overlay/   the visible companion (Qt)                        │
    │  window · panel · tray · hotkeys · bridge (Qt signals)       │
+   ├──────────────────────────────────────────────────────────────┤
+   │ server.py · webui.py   the same bot over HTTP (stdlib only)  │
    └───────────────▲──────────────────────────┬───────────────────┘
                    │ status/say/action events │ clicks, typed tasks
    ┌───────────────┴──────────────────────────▼───────────────────┐
@@ -144,6 +146,7 @@ if frame_hash_after == frame_hash_before: no_change_streak += 1
 | `agent/planner.py` | Prompt work is separate from loop work: the planner can be replaced (a local model, a smarter model) without touching verification or budgets. |
 | `agent/bridge.py` | The bridge is the *only* place that knows about threads, so the agent stays synchronous and testable. |
 | `overlay/bridge.py` | The Qt signal relay is the only place that knows about Qt's thread rules. |
+| `server.py` | The HTTP front end wraps the *existing* `BridgeEvents` instead of the bridge learning about the web, so the agent still knows nothing about its front ends — and the browser can run in the same process (sharing one bridge) or on its own, on a machine with no Qt. |
 | `control/editing.py` | The edit engine is separate from the actions that use it, and `apply_edit` is a *pure function*, so the semantics of `replace`/`insert_after`/`append` are testable without a screen, a clipboard or a clock. |
 | `skills/base.py` | A pack is data (facts, shortcuts, recipes, tools) with one matching rule, so a new app is a new file and not a new branch in the agent. |
 | `skills/recorder.py` | Recording is a *listener* on the input side, so it can be started and stopped from the UI without the agent knowing it exists; distilling is a pure function over the recorded events. |

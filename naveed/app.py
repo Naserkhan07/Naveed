@@ -5,9 +5,12 @@ optional ``python -m naveed.overlay``.  Keeping the wiring here means there is
 exactly one place that decides what "starting Naveed" means, which matters
 because there are three quite different ways to run it:
 
-``overlay``   the normal one: mascot on screen, panel, tray, voice;
+``overlay``   the normal one: mascot on screen, panel, tray, voice — and, unless
+              ``--no-serve`` is given, the browser front end on the same bridge;
 ``agent``     headless single task (``--prompt "do X"``) — how you test the loop
               without a display, and how a power user scripts it;
+``serve``     the browser front end alone (``--serve``): the same bot, no window,
+              nothing beyond the standard library needed to start it;
 ``watch``     headless screen watching only (``--watch``), useful for debugging
               capture on a new machine.
 
@@ -21,7 +24,7 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__, lazy
 from .config import Config, PROVIDER_PRESETS, load_config, write_env_file
@@ -38,20 +41,44 @@ class NaveedApp:
         self.config = config or load_config()
         self.overlay: Optional[Any] = None
         self.bridge: Optional[Any] = None
+        #: the HTTP/browser front end, when it is running in this process
+        self.server: Optional[Any] = None
         #: set to True by the stop hotkey while recording a demonstration
         self._teach_stop = False
         #: tasks finished in this session, for --export-training
         self.recent_tasks: List[Any] = []
 
     # --- reporting --------------------------------------------------------
-    def describe(self) -> Dict[str, Any]:
-        """Environment and capability report (``--check``)."""
-        return describe_environment(self.config)
+    def describe(self, *, probe: bool = False) -> Dict[str, Any]:
+        """Environment and capability report (``--check``).
+
+        ``probe=True`` also asks the model endpoint whether it is *answering*, not
+        merely configured. That distinction matters: a local server that is not
+        running still looks configured, which is exactly how "✓ configured" turned
+        into a failed task.
+        """
+        return describe_environment(self.config, probe=probe)
+
+    @staticmethod
+    def _llm_hint(config: Config) -> str:
+        from .agent.executor import model_unreachable_message
+
+        return model_unreachable_message(config)
+
+    def _model_reachability(self) -> Tuple[bool, str]:
+        """(is the endpoint answering, why not) — cheap, and never raises."""
+        from .agent.llm import LLMClient
+
+        try:
+            return LLMClient(self.config.llm).probe()
+        except Exception as error:  # a probe must never be the reason a run fails
+            logger.debug("model probe failed: %s", error)
+            return True, ""
 
     def print_report(self, stream=None) -> None:
         """Human-readable version of :meth:`describe`."""
         stream = stream or sys.stdout
-        report = self.describe()
+        report = self.describe(probe=True)
         print(f"Naveed {__version__}", file=stream)
         print(f"  python      {report['python']}  ({report['platform']})", file=stream)
         print(f"  config      {report['config_file'] or '(defaults — none written yet)'}", file=stream)
@@ -59,6 +86,12 @@ class NaveedApp:
         print(f"  model       {report['model']}  {'✓ configured' if report['model_ready'] else '✗ no key/local server'}", file=stream)
         if not report["model_ready"]:
             print("              add one:  python -m naveed --setup --provider ollama", file=stream)
+        elif report.get("model_probe_ran"):
+            reachable = report.get("model_reachable")
+            mark = "✓" if reachable else "✗"
+            print(f"              {mark} {report.get('model_probe', '')}", file=stream)
+            if not reachable:
+                print("              start it, or pick another provider: python -m naveed --setup --provider openai", file=stream)
         print(f"  interface   {'✓ PySide6 installed' if report['ui'] else '✗ PySide6 missing (no mascot)'}", file=stream)
         print(f"  capture     backends: {', '.join(report['capture_backends']) or 'none'}", file=stream)
         print(f"              screen access: {report['screen_access']}", file=stream)
@@ -73,11 +106,29 @@ class NaveedApp:
             print('              install: pip install "naveed[ui,capture,input]"', file=stream)
 
     # --- running modes ------------------------------------------------------
-    def run_overlay(self, *, prompt: Optional[str] = None) -> int:
-        """Start the floating companion (the normal way to run Naveed)."""
+    def run_overlay(
+        self,
+        *,
+        prompt: Optional[str] = None,
+        serve: bool = True,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        open_browser: bool = False,
+    ) -> int:
+        """Start the floating companion (the normal way to run Naveed).
+
+        ``serve=True`` also brings up the browser front end on the overlay's own
+        bridge, so ``python -m naveed`` gives you the mascot *and* a page at
+        http://127.0.0.1:8765 that drives the very same bot.
+        """
         from .overlay.bridge import OverlayApp
 
-        self.overlay = OverlayApp(self.config)
+        if host or port:
+            self.config = self.config.merged(**{
+                "web.host": host or self.config.web.host,
+                "web.port": int(port or self.config.web.port),
+            })
+        self.overlay = OverlayApp(self.config, serve=serve, open_browser=open_browser)
         self.bridge = self.overlay.bridge
         if prompt:
             self.overlay.bridge.submit(prompt)
@@ -93,6 +144,43 @@ class NaveedApp:
             except Exception:
                 pass
 
+    def run_server(
+        self,
+        *,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        open_browser: bool = False,
+        console: bool = True,
+    ) -> int:
+        """Serve the bot over HTTP only — the browser-based way to run it.
+
+        No Qt anywhere on this path, so it works on a headless machine, in a
+        container, or before PySide6 is installed. ``console=True`` mirrors every
+        event to the terminal, which is how you watch what the page is doing.
+        """
+        from .server import BotServer
+
+        if host or port:
+            self.config = self.config.merged(**{
+                "web.host": host or self.config.web.host,
+                "web.port": int(port or self.config.web.port),
+            })
+        server = BotServer(self.config, console=console)
+        self.server = server
+        reachable, reason = self._model_reachability()
+        if not reachable:
+            print(self._llm_hint(self.config), file=sys.stderr)
+            print(f"  ({reason})", file=sys.stderr)
+            print("  the page will still open — it will simply refuse tasks until the model answers.", file=sys.stderr)
+        if open_browser or self.config.web.open_browser:
+            import threading
+
+            threading.Timer(0.6, lambda: _open_url(server.url)).start()
+        try:
+            return server.serve_forever()
+        finally:
+            server.stop()
+
     def run_task(self, prompt: str, *, verbose: bool = True) -> int:
         """Run one task headlessly and print what happened."""
         from .agent.bridge import AgentBridge, BridgeEvents
@@ -107,6 +195,14 @@ class NaveedApp:
             on_question=lambda question: _echo(verbose, f"  question: {question}"),
             on_error=lambda message: _echo(verbose, f"  error: {message}"),
         )
+        # Nothing can run without a model, so find out now and say something
+        # useful, rather than planning for 45 seconds against a dead address.
+        reachable, reason = self._model_reachability()
+        if not reachable:
+            print(self._llm_hint(self.config), file=sys.stderr)
+            print(f"  ({reason})", file=sys.stderr)
+            return 1
+
         bridge = AgentBridge(self.config, events=events)
         self.bridge = bridge
         bridge.start()
@@ -586,8 +682,13 @@ class NaveedApp:
 
 # --- helpers ----------------------------------------------------------------
 
-def describe_environment(config: Config) -> Dict[str, Any]:
-    """Collect everything the status report needs, never raising."""
+def describe_environment(config: Config, *, probe: bool = False) -> Dict[str, Any]:
+    """Collect everything the status report needs, never raising.
+
+    ``probe=True`` additionally asks the model endpoint whether it answers; the
+    panel and the tests call it without the probe so nothing blocks on a network
+    round trip it did not ask for.
+    """
     from .screen.capture import available_backends
     from .screen.capture_fallback import get_screen_access_status
 
@@ -627,6 +728,16 @@ def describe_environment(config: Config) -> Dict[str, Any]:
     if not capture_backends:
         required.append("capture backend (mss/Pillow)")
 
+    model_reachable: Optional[bool] = None
+    model_probe = ""
+    if probe and config.llm.configured:
+        try:
+            from .agent.llm import LLMClient
+
+            model_reachable, model_probe = LLMClient(config.llm).probe()
+        except Exception as error:  # pragma: no cover - defensive
+            model_reachable, model_probe = None, f"probe failed: {error}"
+
     return {
         "version": __version__,
         "python": sys.version.split()[0],
@@ -635,6 +746,9 @@ def describe_environment(config: Config) -> Dict[str, Any]:
         "config_file": config.source_file,
         "model": config.llm.label,
         "model_ready": config.llm.configured,
+        "model_reachable": model_reachable,
+        "model_probe": model_probe,
+        "model_probe_ran": bool(probe and config.llm.configured),
         "ui": lazy.find_spec_safe("PySide6") is not None,
         "capture_backends": capture_backends,
         "screen_access": get_screen_access_status(),
@@ -653,6 +767,16 @@ def install_hint_text() -> str:
         "  python -m naveed --setup --provider ollama   # or openai / openrouter / groq\n"
         "  python -m naveed --check"
     )
+
+
+def _open_url(url: str) -> None:
+    """Open *url* in the desktop browser, ignoring a machine that has none."""
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:  # a headless box has no browser, which is not an error
+        logger.debug("no browser for %s", url)
 
 
 def _echo(enabled: bool, line: str) -> None:

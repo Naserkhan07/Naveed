@@ -552,6 +552,24 @@ class ControlPanel:
             except Exception:
                 pass
 
+    def focus_input(self) -> None:
+        """Put the caret in the task box — what a click on the mascot should do.
+
+        Qt refuses focus to a window it has not activated, so the panel is raised
+        and activated first; otherwise the click appears to do nothing, which is
+        precisely the complaint this avoids.
+        """
+        if self.widget is None:
+            return
+        try:
+            self.widget.raise_()
+            self.widget.activateWindow()
+        except Exception as error:  # pragma: no cover - platform dependent
+            logger.debug("could not activate the panel: %s", error)
+        edit = getattr(self.widget, "command_edit", None)
+        if edit is not None:
+            edit.setFocus()
+
     def set_question(self, question: str) -> None:
         """Show (or clear) the agent's question above the input box."""
         self._question = question or ""
@@ -757,16 +775,39 @@ class ControlPanel:
             return x, y
         mascot_x, mascot_y, mascot_size = near
         anchor = self.config.overlay.panel_anchor
+        gap = 12
+
+        def above() -> Tuple[int, int]:
+            return mascot_x + mascot_size - PANEL.width, mascot_y - PANEL.height - gap
+
+        def below() -> Tuple[int, int]:
+            return mascot_x + mascot_size - PANEL.width, mascot_y + mascot_size + gap
+
         if anchor == "below":
-            x, y = mascot_x + mascot_size - PANEL.width, mascot_y + mascot_size + 10
+            x, y = below()
         elif anchor == "left":
-            x, y = mascot_x - PANEL.width - 12, mascot_y
+            x, y = mascot_x - PANEL.width - gap, mascot_y
         elif anchor == "right":
-            x, y = mascot_x + mascot_size + 12, mascot_y
+            x, y = mascot_x + mascot_size + gap, mascot_y
         else:  # above (default)
-            x, y = mascot_x + mascot_size - PANEL.width, mascot_y - PANEL.height - 12
-        x = max(8, min(x, screen_w - PANEL.width - 8))
-        y = max(8, min(y, screen_h - PANEL.height - 8))
+            x, y = above()
+
+        # Flip to the other side when the preferred one does not fit. The mascot
+        # now starts *below the camera* at the top of the screen, where "above"
+        # has no room — clamping there would stack the panel on top of the
+        # character, which looks broken and hides the thing the user clicked.
+        margin = 8
+        if anchor in ("above", "below") and (y < margin or y + PANEL.height > screen_h - margin):
+            other = below() if (anchor == "above" or y < margin) else above()
+            if margin <= other[1] and other[1] + PANEL.height <= screen_h - margin:
+                x, y = other
+        elif anchor in ("left", "right") and (x < margin or x + PANEL.width > screen_w - margin):
+            other = (mascot_x - PANEL.width - gap, mascot_y) if anchor == "right" else (mascot_x + mascot_size + gap, mascot_y)
+            if margin <= other[0] and other[0] + PANEL.width <= screen_w - margin:
+                x, y = other
+
+        x = max(margin, min(x, screen_w - PANEL.width - margin))
+        y = max(margin, min(y, screen_h - PANEL.height - margin))
         return int(x), int(y)
 
     def hide(self) -> None:

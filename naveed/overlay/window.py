@@ -130,17 +130,22 @@ class MascotWindow:
         return int(self.config.overlay.size + self.config.overlay.padding * 2)
 
     def default_position(self, screen_width: int = 0, screen_height: int = 0) -> Tuple[int, int]:
-        """Position on the primary screen: centred, slightly below the middle."""
-        overlay = self.config.overlay
+        """Where the mascot starts: below the camera, or where it was left.
+
+        See :mod:`naveed.overlay.placement` for the rules; this only supplies the
+        screen size and the remembered position.
+        """
+        from .placement import load_saved_position, resolve_start_position
+
         screen_width = screen_width or _primary_screen_size()[0]
         screen_height = screen_height or _primary_screen_size()[1]
-        x = overlay.x if overlay.x is not None else int(screen_width / 2 - self.size / 2)
-        y = (
-            overlay.y
-            if overlay.y is not None
-            else int(screen_height / 2 + screen_height * overlay.offset_from_middle - self.size / 2)
+        return resolve_start_position(
+            self.config.overlay,
+            size=self.size,
+            screen_width=screen_width,
+            screen_height=screen_height,
+            saved=load_saved_position(self.config),
         )
-        return x, y
 
     # --- lifecycle -----------------------------------------------------
     def build(self) -> Any:
@@ -247,7 +252,11 @@ class MascotWindow:
                 if event.button() != QtCore.Qt.MouseButton.LeftButton:
                     return
                 facade._drag_origin = None
-                if not facade._drag_moved and facade.on_click is not None:
+                if facade._drag_moved:
+                    # Remember where it was put: the mascot is meant to be dragged
+                    # somewhere convenient once, not every single morning.
+                    facade.remember_position(self.x(), self.y())
+                elif facade.on_click is not None:
                     facade.on_click()
                 event.accept()
 
@@ -346,6 +355,21 @@ class MascotWindow:
 
     def move_to(self, x: int, y: int) -> None:
         if self.widget is not None:
+            self.widget.move(int(x), int(y))
+
+    def remember_position(self, x: int, y: int) -> None:
+        """Store a dragged position (a no-op unless the setting is on)."""
+        from .placement import save_position
+
+        save_position(self.config, x, y)
+
+    def reset_position(self) -> None:
+        """Back to the anchor position (the panel's "put it back" action)."""
+        from .placement import clear_saved_position
+
+        clear_saved_position(self.config)
+        if self.widget is not None:
+            x, y = self.default_position()
             self.widget.move(int(x), int(y))
 
     def position(self) -> Tuple[int, int]:

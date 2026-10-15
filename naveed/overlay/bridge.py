@@ -18,6 +18,7 @@ and the optional global hotkey (:mod:`naveed.overlay.hotkeys`).
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Dict, List, Optional
 
 from .. import lazy
@@ -28,14 +29,29 @@ from .window import MascotWindow
 
 logger = logging.getLogger("naveed.overlay")
 
+
+def _open_in_browser(url: str) -> None:
+    """Hand the URL to the desktop's browser, quietly if there is not one."""
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:
+        logger.debug("could not open a browser for %s", url)
+
 __all__ = ["OverlayApp"]
 
 
 class OverlayApp:
     """Owns the QApplication and every visible surface."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, serve: bool = False, open_browser: bool = False) -> None:
         self.config = config
+        #: run the browser front end alongside the mascot (same bridge, one bot)
+        self.serve = bool(serve)
+        self.open_browser = bool(open_browser)
+        #: the HTTP server, when it is running in this process
+        self.server: Optional[Any] = None
         self.mascot = MascotWindow(
             config,
             on_click=self._on_mascot_click,
@@ -77,19 +93,47 @@ class OverlayApp:
         self.tray: Optional[Any] = None
         self.hotkeys: Optional[Any] = None
         self._qt: Dict[str, Any] = {}
+        #: the one QApplication, created in build() before any widget
+        self.application: Optional[Any] = None
         self._questions: List[str] = []
         self._last_spoken = ""
 
     # --- construction -----------------------------------------------------
     def build(self) -> None:
-        """Create the Qt application, widget tree and long-lived helpers."""
+        """Create the Qt application, widget tree and long-lived helpers.
+
+        The ``QApplication`` is made **first**, before a single QWidget exists.
+        Qt is explicit that a widget may only be constructed once an application
+        object is present — without this, Windows printed
+        ``QWidget: Must construct a QApplication before a QWidget`` and the
+        mascot silently failed to appear (the widgets existed but Qt would not
+        manage them).
+        """
         QtCore = lazy.load("PySide6.QtCore", extra="ui")
         QtWidgets = lazy.load("PySide6.QtWidgets", extra="ui")
         self._qt = {"QtCore": QtCore, "QtWidgets": QtWidgets}
 
+        # Reuse the running application if there is one (the tray, or a second
+        # `build()`), otherwise create it — and never construct a widget first.
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication([sys.argv[0] if sys.argv else "naveed"])
+            app.setApplicationName("Naveed")
+            app.setApplicationDisplayName("Naveed")
+            app.setQuitOnLastWindowClosed(False)
+        self.application = app
+
         self.mascot.build()
         self.panel.build()
         self._wire_signals()
+
+        # The browser front end, when it was asked for: same bridge, so a task
+        # typed in the browser moves the mascot on screen and vice versa. Read
+        # defensively — build() is also called by tests with a stripped config.
+        web = getattr(self.config, "web", None)
+        if getattr(self, "serve", False) and getattr(web, "enabled", True):
+            self.start_browser()
+
 
         # Voice (optional, offline): the mascot's mouth follows the speaker.
         try:
@@ -156,6 +200,12 @@ class OverlayApp:
             error = QtCore.Signal(str)
             speech = QtCore.Signal(object)
             level = QtCore.Signal(float)
+            #: the global hotkey fires on pynput's listener thread; touching
+            #: widgets from there is undefined behaviour, so it comes through a
+            #: signal like every other cross-thread call.
+            wake = QtCore.Signal()
+            #: microphone / speech state arrives from the speech threads
+            voice_state = QtCore.Signal(str)
 
             def __init__(self) -> None:
                 super().__init__()
@@ -168,6 +218,8 @@ class OverlayApp:
                 self.error.connect(facade._apply_agent_error)
                 self.speech.connect(facade._apply_speech_event)
                 self.level.connect(facade._apply_level)
+                self.wake.connect(facade._on_mascot_click)
+                self.voice_state.connect(facade._apply_voice_state)
 
         self._relay = _Relay()
 
@@ -192,21 +244,63 @@ class OverlayApp:
 
         self.bridge.start()
         if self.bridge.model_ready:
-            self.bridge.say("I am here. Click me and tell me what to do.")
+            # "Configured" is not the same as "answering" — say which one it is,
+            # because a silent mascot in front of a dead endpoint looks broken.
+            reachable, reason = self._probe_model()
+            if reachable:
+                self.bridge.say("I am here. Click me and tell me what to do.")
+            else:
+                logger.info("model endpoint is not answering: %s", reason)
+                self.bridge.say(f"I am on screen, but my model is not answering — {reason} Open settings to fix it.")
         else:
             self.bridge.say(
                 "I am watching your screen, but I have no model yet — open settings and add a key or a local model."
             )
         self.panel.apply_state(self.bridge.status())
 
-        app = QtWidgets.QApplication.instance()
+        app = self.application or QtWidgets.QApplication.instance()
+        if app is None:  # pragma: no cover - build() always creates one
+            raise RuntimeError("no QApplication: call build() before run()")
         # Keep running when the last window is hidden (the tray owns the app).
         app.setQuitOnLastWindowClosed(False)
         return int(app.exec())
 
+    def start_browser(self, *, port: Optional[int] = None) -> Optional[str]:
+        """Serve the browser front end on this process's bot; return its URL.
+
+        Failure is not fatal: the mascot is the main way to use Naveed, so a port
+        clash or a sandbox that forbids listening must not stop it appearing.
+        """
+        if self.server is not None:
+            return self.server.url
+        try:
+            from ..server import BotServer
+
+            self.server = BotServer(
+                self.config,
+                bridge=self.bridge,
+                port=port if port is not None else self.config.web.port,
+            ).start()
+        except Exception as error:
+            logger.warning("browser front end could not start: %s", error)
+            self.server = None
+            return None
+        url = self.server.url
+        logger.info("browser front end: %s", url)
+        try:
+            print(f"Naveed is also in your browser: {url}")
+        except Exception:  # pragma: no cover - a closed stdout must not matter
+            pass
+        if self.open_browser or self.config.web.open_browser:
+            _open_in_browser(url)
+        return url
+
     def quit(self) -> None:
         """Shut everything down cleanly."""
         try:
+            if self.server is not None:
+                self.server.stop()
+                self.server = None
             if self.hotkeys is not None:
                 self.hotkeys.stop()
             if self.voice is not None:
@@ -224,17 +318,32 @@ class OverlayApp:
                     instance.quit()
 
     # --- mascot / panel interactions -----------------------------------------
+    def _probe_model(self) -> tuple:
+        """Ask the endpoint whether it answers. Never blocks the UI for long."""
+        try:
+            from ..agent.llm import LLMClient
+
+            return LLMClient(self.config.llm).probe(timeout=1.5)
+        except Exception as error:  # pragma: no cover - defensive
+            logger.debug("model probe failed: %s", error)
+            return True, ""
+
     def _on_mascot_click(self) -> None:
-        """Single click on the mascot = talk (the user's chosen wake action)."""
+        """Single click on the mascot = talk (the user's chosen wake action).
+
+        The panel comes up either way: clicking the character is how the user asks
+        for its attention, and a click that changes nothing on screen reads as a
+        broken app.
+        """
+        self.panel.show(near=(*self.mascot.position(), self.config.overlay.size))
         if self.voice is not None and self.voice.can_listen:
             started = self.voice.begin()
             if started:
                 self.mascot.set_state("listening")
                 self.panel.apply_state({"agent_state": "listening"})
                 return
-        # No microphone: fall back to the panel's input box so the click still
-        # does something useful instead of silently failing.
-        self.panel.show(near=(*self.mascot.position(), self.config.overlay.size))
+        # No microphone, or it refused to start: type instead of talking.
+        self.panel.focus_input()
         self.bridge.say("I cannot hear you — no microphone is available. Type the task in the panel instead.")
 
     def _on_toggle_panel(self) -> None:
@@ -283,7 +392,15 @@ class OverlayApp:
         self.bridge.resolve_confirmation(token, approved)
 
     def _on_hotkey(self) -> None:
-        """Global hotkey pressed: behave exactly like clicking the mascot."""
+        """Global hotkey pressed: behave exactly like clicking the mascot.
+
+        Called from pynput's thread, so it must not touch a widget directly —
+        the relay re-emits on the GUI thread.
+        """
+        relay = getattr(self, "_relay", None)
+        if relay is not None:
+            relay.wake.emit()
+            return
         self._on_mascot_click()
 
     def _on_hide(self) -> None:
@@ -315,11 +432,29 @@ class OverlayApp:
 
     # --- voice events ---------------------------------------------------------
     def _on_voice_state(self, state: str) -> None:
+        """Listening/speaking state, reported by the speech threads.
+
+        Qt widgets belong to the GUI thread; the recorder and the speaker each run
+        on their own, so these hop across on a signal rather than being poked
+        directly from another thread (which works until it does not, and then
+        crashes the whole app on Windows).
+        """
+        relay = getattr(self, "_relay", None)
+        if relay is not None:
+            relay.voice_state.emit(str(state))
+            return
+        self._apply_voice_state(str(state))
+
+    def _apply_voice_state(self, state: str) -> None:
         self.mascot.set_state(state)
         self.panel.set_state_expression(state)
 
     def _on_voice_level(self, level: float) -> None:
-        self.mascot.set_microphone_level(level)
+        relay = getattr(self, "_relay", None)
+        if relay is not None:
+            relay.level.emit(float(level))
+            return
+        self._apply_level(float(level))
 
     def _on_voice_text(self, text: str) -> None:
         self.bridge.submit(text)
