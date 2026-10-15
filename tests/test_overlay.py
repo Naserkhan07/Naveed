@@ -14,8 +14,11 @@ Two things are worth testing here and both are easy to get wrong:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -599,6 +602,196 @@ class TrayAndWindowFacadeTests(unittest.TestCase):
             x, y = panel.anchor_position((1800, 900, 200))
             self.assertGreaterEqual(x, 8)
             self.assertGreaterEqual(y, 8)
+
+
+class OverlayDoctorTests(unittest.TestCase):
+    """`--overlay-check`: the answer to "I ran it and nothing appeared".
+
+    The report itself is pure Python, so it is testable everywhere; the window
+    assertions that need real Qt live in RealWindowTests below and skip when Qt
+    cannot start.
+    """
+
+    def test_a_missing_system_library_is_named_with_the_command_that_fixes_it(self):
+        from naveed.overlay import doctor
+
+        message = "ImportError: libGL.so.1: cannot open shared object file: No such file or directory"
+        hint = doctor.library_hint(message)
+        self.assertIsNotNone(hint, "libGL is the single most common cause")
+        self.assertIn("libgl1", hint)
+        for text, expected in (
+            ("libEGL.so.1: cannot open shared object file", "libegl1"),
+            ("libxkbcommon.so.0: cannot open shared object file", "libxkbcommon-x11"),
+            ("libdbus-1.so.3: cannot open shared object file", "libdbus-1-3"),
+        ):
+            self.assertIn(expected, doctor.library_hint(text) or "", text)
+        self.assertIsNone(doctor.library_hint("something nobody has seen before"))
+
+    def test_the_environment_report_never_raises_and_says_whether_qt_is_usable(self):
+        from naveed.overlay import doctor
+
+        report = doctor.environment_report()
+        for key in ("python", "os", "session", "display", "wayland", "pyside6", "qt_ok"):
+            self.assertIn(key, report)
+        self.assertIn(report["qt_ok"], ("yes", "no"))
+
+    def test_an_unusable_qt_is_reported_with_the_fix_and_exit_code_2(self):
+        import contextlib
+        import io
+
+        from naveed.config import load_config
+        from naveed.overlay import doctor
+
+        stream = io.StringIO()
+        with mock.patch.object(doctor, "qt_available", return_value=(
+            False,
+            "PySide6.QtWidgets is not installed\nImport error: libGL.so.1: cannot open shared "
+            "object file: No such file or directory",
+        )):
+            with contextlib.redirect_stdout(stream):
+                code = doctor.run_check(load_config(), stream=stream)
+        output = stream.getvalue()
+
+        self.assertEqual(code, 2)
+        self.assertIn("no window can be created", output)
+        self.assertIn("libGL.so.1", output)
+        self.assertIn("libgl1", output, "the system package that fixes it must be printed")
+
+    def test_a_pyside_version_with_a_known_crash_is_flagged_with_the_fix(self):
+        from naveed.overlay import doctor
+
+        warning = doctor.pyside_warning("6.12.0")
+        self.assertIsNotNone(warning, "6.12.0 aborts after a few thousand gradient fills")
+        self.assertIn("<6.12", warning)
+        self.assertIsNone(doctor.pyside_warning("6.8.1"))
+        self.assertIsNone(doctor.pyside_warning(""))
+
+    def test_a_headless_plugin_is_not_mistaken_for_a_visible_one(self):
+        from naveed.overlay import doctor
+
+        self.assertNotIn("offscreen", doctor.VISIBLE_PLATFORMS,
+                         "offscreen runs, and shows nothing: that is the confusing case")
+        for name in ("xcb", "wayland", "windows", "cocoa"):
+            self.assertIn(name, doctor.VISIBLE_PLATFORMS)
+
+
+class LauncherStartsAWindowTests(unittest.TestCase):
+    """`python main.py` must start the *window*, or explain why it cannot.
+
+    It used to fall back to the browser front end when PySide6 was missing or
+    broken, which is indistinguishable from "the bot did not appear" — and it is
+    what a user with a missing `libGL.so.1` saw instead of the mascot.
+    """
+
+    def setUp(self):
+        import main as launcher
+
+        self.launcher = launcher
+
+    def _fake_app(self):
+        calls = []
+
+        class FakeApp:
+            def run_overlay(self, **kwargs):
+                calls.append(("overlay", kwargs))
+                return 0
+
+            def run_server(self, **kwargs):
+                calls.append(("server", kwargs))
+                return 0
+
+        return FakeApp(), calls
+
+    def test_a_broken_qt_is_explained_instead_of_starting_a_browser(self):
+        import contextlib
+        import io
+
+        from naveed.config import load_config
+
+        app, calls = self._fake_app()
+        stream = io.StringIO()
+        with mock.patch("naveed.overlay.doctor.qt_available",
+                        return_value=(False, "Import error: libGL.so.1: cannot open shared object file")):
+            with contextlib.redirect_stdout(stream):
+                code = self.launcher._start_everything(app, load_config(), stream=stream)
+        output = stream.getvalue()
+
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [], "no window and no HTTP server may be started")
+        self.assertIn("could not open its window", output)
+        self.assertIn("libgl1", output, "the system fix belongs in the message")
+        self.assertIn("--serve", output, "the optional HTTP front end is still offered, as a choice")
+
+    def test_a_working_qt_starts_the_window_and_nothing_else(self):
+        from naveed.config import load_config
+
+        app, calls = self._fake_app()
+        with mock.patch("naveed.overlay.doctor.qt_available", return_value=(True, "6.12.0")):
+            with open(os.devnull, "w") as devnull:
+                code = self.launcher._start_everything(app, load_config(), stream=devnull)
+        self.assertEqual(code, 0)
+        self.assertEqual([name for name, _ in calls], ["overlay"])
+        self.assertFalse(calls[0][1].get("open_browser"), "the browser is not opened for you")
+
+
+class RealWindowTests(unittest.TestCase):
+    """The window, built by the real Qt — the one test that proves it can appear.
+
+    Run in a **child process** (``python -m naveed --overlay-check``) rather than
+    in-process, for two reasons: the check is then exercised exactly as a user
+    runs it, and a Qt crash at interpreter shutdown cannot take the test runner
+    with it. That is not hypothetical — PySide6 6.12.0 aborts during
+    finalization after enough gradient fills, which is why the parent tolerates
+    exit code 134 as long as the child's *output* shows the window came up.
+
+    Skipped wherever Qt cannot start at all; on those machines the answer is
+    ``--overlay-check``, not a green tick. ``QT_QPA_PLATFORM=offscreen`` is forced
+    so the test never flashes a window on somebody's desktop.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from naveed.overlay import doctor
+
+        cls.usable, cls.reason = doctor.qt_available()
+
+    def setUp(self):
+        if not self.usable:
+            self.skipTest(f"Qt cannot open a window here: {self.reason.splitlines()[0]}")
+
+    def _run_check(self, *extra: str) -> str:
+        """Run the real check in a child process and return its output."""
+        environment = dict(os.environ)
+        environment["QT_QPA_PLATFORM"] = "offscreen"
+        environment["NAVEED_HOME"] = tempfile.mkdtemp(prefix="naveed-overlay-")
+        process = subprocess.run(
+            [sys.executable, "-m", "naveed", "--overlay-check", *extra],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=environment, capture_output=True, text=True, timeout=180,
+        )
+        output = f"{process.stdout}\n{process.stderr}"
+        self.assertIn(
+            process.returncode, (0, 134),
+            f"unexpected exit {process.returncode}:\n{output}",
+        )
+        return output
+
+    def test_the_mascot_comes_up_visible_on_top_and_inside_the_screen(self):
+        output = self._run_check()
+        self.assertIn("mascot window:", output)
+        self.assertIn("✓ the mascot is on screen", output)
+        for flag in ("frameless", "always-on-top", "no-taskbar-entry"):
+            self.assertIn(f"✓ {flag}", output, f"the window must be {flag}")
+
+    def test_the_window_check_can_show_what_the_window_contains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "shot.png")
+            output = self._run_check("--save", target)
+            self.assertIn("saved", output)
+            for suffix in ("mascot", "panel"):
+                path = os.path.join(directory, f"shot-{suffix}.png")
+                self.assertTrue(os.path.exists(path), f"{suffix} snapshot missing:\n{output}")
+                self.assertGreater(os.path.getsize(path), 2000, "a blank snapshot proves nothing")
 
 
 if __name__ == "__main__":

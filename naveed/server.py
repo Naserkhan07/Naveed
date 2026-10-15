@@ -520,19 +520,29 @@ class BotServer:
         """Start the floating mascot as its own process (browser → desktop).
 
         Its own process on purpose: Qt wants the main thread for its event loop,
-        and Naveed's main thread is already serving HTTP here.  ``--no-serve``
-        stops the new copy from trying to bind this port too.
+        and Naveed's main thread is already serving HTTP here.  Plain
+        ``python -m naveed`` now starts the window *and nothing else*, so the new
+        copy cannot try to bind this port too.
         """
         if self.overlay_running:
             return {"ok": True, "code": 200, "message": "the mascot is already on screen"}
         if not self.report().get("ui"):
+            # "PySide6 is installed" and "a window can open" are different
+            # questions, so the hint is the *system* answer when that is the
+            # problem (a missing libGL.so.1) rather than another pip command.
+            hint = 'pip install "naveed[ui]"'
+            from .overlay.doctor import library_hint, qt_available
+
+            usable, detail = qt_available()
+            if not usable:
+                hint = library_hint(str(detail)) or detail.splitlines()[0]
             return {
                 "ok": False,
                 "code": 400,
-                "error": "PySide6 is not installed, so there is no mascot to show",
-                "hint": 'pip install "naveed[ui]"',
+                "error": "the floating window cannot start on this machine",
+                "hint": hint,
             }
-        command = [sys.executable, "-m", "naveed", "--no-serve"]
+        command = [sys.executable, "-m", "naveed"]
         try:
             self._overlay_process = subprocess.Popen(
                 command,

@@ -41,11 +41,12 @@ ends drive **one** bot; see [The browser](#the-browser).
   local server that needs no credential at all. There is no key to find, paste or
   rotate anywhere in Naveed; if a hosted gateway insists on an `Authorization`
   header, that one optional `LLM_TOKEN` covers it.
-- **Shows up in your browser too, if a text box is handier.** `python -m naveed
+- **Optional, and only if asked: shows up in your browser too.** `python -m naveed
   --serve` puts the same bot on `http://127.0.0.1:8765` — a live log of every
   action, a status card, the quick actions, and a box for answering its questions.
   Standard library only, loopback only, no assets fetched from the internet, and it
-  runs on a machine with no Qt at all.
+  runs on a machine with no Qt at all. The window never turns into a web page on
+  its own; when Qt cannot start, `python -m naveed` says exactly what is missing.
 - **Verifies its own work.** After acting, Naveed waits for the screen to settle
   and compares before/after. If nothing changed, it knows the click did nothing,
   says so, and tries a different route instead of looping forever.
@@ -157,8 +158,18 @@ what to do — if a microphone is available it also starts listening — press
 
 ```bash
 python main.py --check            # what is installed, what works, what is missing
+python main.py --overlay-check    # can the window appear here — and if not, exactly why
 python main.py --portrait me.png  # render the mascot sheet + panel mock, no GUI needed
 ```
+
+`--overlay-check` is the one to run when the mascot does not show up. It reports
+the Qt version, the platform plugin, the session and the screens, then measures the
+real window: whether the mascot's rectangle lands inside a screen, whether it is
+always on top with no taskbar entry, and whether the panel is up. A missing system
+library gets the exact `apt`/`dnf` line, a headless `QT_QPA_PLATFORM` or an
+absent `DISPLAY` is called out by name, and a remembered off-screen position is
+spotted (delete `~/.naveed/state/overlay.json`). Add `--save shot.png` to also
+write `shot-mascot.png` and `shot-panel.png`: what the windows really contain.
 
 `--check` asks the model endpoint whether it is **answering**, not merely
 configured — a local server that is not running is the most common reason a task
@@ -189,7 +200,7 @@ configured and failing later.
 | **Panel shortcuts** | *Look at screen, Summarise, Screenshot, Explain error, Write for me, Clean up, Translate, Automate.* |
 | **Panel input box** | Type a task. When Naveed asks a question, answers here go straight back to it. |
 | **Tray icon** | Everything above without the mascot being visible. |
-| **A browser** | The same bot is served at `http://127.0.0.1:8765` — a text box, a scrollback, and the quick actions. See [The browser](#the-browser). |
+| **A browser** *(optional)* | `python -m naveed --serve` serves the same bot at `http://127.0.0.1:8765` — a text box, a scrollback, and the quick actions. Off until you ask for it. See [The browser](#the-browser). |
 
 ### The browser
 
@@ -197,18 +208,19 @@ Naveed is a desktop overlay first, but the same bot is also served over HTTP, so
 you can type to it in a browser — or from a tablet on the same network:
 
 ```bash
-python -m naveed                 # mascot on screen *and* the page at :8765
-python -m naveed --serve         # the page only, no window, works without PySide6
+python -m naveed                 # the mascot, on screen, always on top
+python -m naveed --overlay-check # can the window appear here — and if not, why not
+python -m naveed --serve         # optional: the same bot over HTTP, no window at all
 python -m naveed --serve --open-browser     # …and open it for me
 python -m naveed --serve --host 0.0.0.0     # reachable from your LAN (token required)
-python -m naveed --no-serve      # the mascot, without the page
 ```
 
-Both front ends drive **one** bot when they run together: the page hands its task to
-the same bridge the mascot uses, so a task typed in the browser makes the mascot
-work, and its answers appear in both places. `--serve` on its own runs a normal
-headless Naveed with the page as its window; it is the one mode that needs nothing
-beyond the standard library.
+Naveed is the floating window; the HTTP front end is a deliberate second way in,
+never a fallback. If Qt — or one of the system libraries Qt links against — is
+missing, `python -m naveed` says which one and how to install it rather than
+turning into something else, because "it silently became a web page" is
+indistinguishable from "the bot did not appear". When both do run, they share one
+`AgentBridge`: one screen watcher, one task queue, two windows onto the same bot.
 
 The page shows the same things the panel does — the model and whether it answers,
 what it can capture and control, the routines it has been taught — plus a running

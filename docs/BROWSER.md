@@ -5,31 +5,36 @@ the task on your screen. This document is about the *other* way to use the very
 same bot — over HTTP, in a browser.
 
 ```bash
-python -m naveed                 # mascot on screen, page at http://127.0.0.1:8765
-python -m naveed --serve         # the page only; no Qt needed at all
-python main.py                   # same as `python -m naveed`: both halves
+python -m naveed                 # the mascot, on screen — no server, no port
+python -m naveed --serve         # the page at http://127.0.0.1:8765; no Qt needed at all
 naveed-web                       # the same as --serve, as a console script
 naveed-web --open-browser        # …and open it for me
 naveed-web --check               # the environment report, then exit
+WEB_ENABLED=true python -m naveed   # both at once, sharing one bot
 ```
 
-Why it exists: the mascot is perfect for "look at this and do it", and a browser
-is better for typing a long instruction, reading back what happened, and using the
-bot from another device. Since both front ends share one agent, they are not two
+Why it exists at all: the mascot is perfect for "look at this and do it", and a
+browser is better for typing a long instruction, reading back what happened, and
+using the bot from another device. It is opt-in for the opposite reason: if a
+window cannot start, a page that quietly opens in its place turns "the bot did not
+appear" into a mystery. `python -m naveed --overlay-check` says what is missing
+instead. Once you are serving, every window below is the same bot. Since both front ends share one agent, they are not two
 products — just two windows onto the same one.
 
 ## One bot, two windows
 
 | Running | What you get |
 |---|---|
-| `python main.py` · `python -m naveed` | mascot **and** the page, together, sharing one `AgentBridge` (one screen watcher, one task queue) |
-| `python -m naveed --serve` · `naveed-web` | the page only, blocking in the terminal; events are echoed there too (stdout, `Ctrl+C` stops it) |
-| `python -m naveed --no-serve` | the mascot only, no HTTP listener |
+| `python main.py` · `python -m naveed` | the floating mascot — this is the normal way to run Naveed, and it needs no server at all |
+| `python -m naveed --serve` · `naveed-web` | the page only, blocking in the terminal; events are echoed there too (stdout, `Ctrl+C` stops it). The one mode that works on a machine with no Qt |
+| `WEB_ENABLED=true` + `python -m naveed` | both, sharing one `AgentBridge` (one screen watcher, one task queue) |
 
-In the first case a task typed in the browser moves the mascot: the panel shows
+When both run, a task typed in the browser moves the mascot: the panel shows
 `thinking`, the mascot's expression changes, and its answer appears in both. That
 is the point of sharing the bridge — two windows, one bot, no double capturing of
-your screen.
+your screen. It is opt-in because Naveed is a desktop companion: if Qt cannot
+start, the window says so and `--overlay-check` explains exactly what is missing,
+instead of quietly opening a page in its place.
 
 ## The page
 
@@ -46,9 +51,9 @@ Served from `/` as one self-contained HTML document (see `naveed/webui.py`):
   browser has one. Nothing is uploaded by Naveed itself; that microphone belongs
   to the browser.
 * **Show mascot** — starts the floating mascot as its own process (`python -m
-  naveed --no-serve`). Qt wants the main thread for its event loop, and that
-  thread is busy serving HTTP here, so a separate process is the honest way to do
-  it. Disabled when PySide6 is not installed, with the install command shown.
+  naveed`). Qt wants the main thread for its event loop, and that thread is busy
+  serving HTTP here, so a separate process is the honest way to do it. Disabled
+  when PySide6 is not installed, with the install command shown.
 * **Quit** — stops the server (and the mascot it started). The mascot keeps
   running if it was started some other way.
 
@@ -121,4 +126,4 @@ loopback-only.
 | `lost the connection to the bot` in the page | The server stopped (`Ctrl+C`, or Quit). The page reconnects by itself when it comes back on the same URL. |
 | Every request is `401` | You bound wider than loopback: append the token from the startup line, `http://host:8765/?token=…`. |
 | *Show mascot* says PySide6 is not installed | That half needs `pip install "naveed[ui]"`; the browser half deliberately does not. |
-| The mascot button does nothing on Windows/macOS | It spawns a separate process; check that `python -m naveed --no-serve` runs from the same interpreter by hand. |
+| The mascot button does nothing on Windows/macOS | It spawns a separate process; run `python -m naveed` by hand to see the error, or `python -m naveed --overlay-check` for the full diagnosis. |

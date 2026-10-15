@@ -29,26 +29,56 @@ answer to "why does nothing happen when it clicks?")
 
 ## The mascot does not appear
 
-Start with the launcher, which checks before it opens a window:
+Ask the machine, not the internet:
 
 ```bash
-python main.py          # prints what is missing, then starts the bot
+python -m naveed --overlay-check
 ```
+
+It reports Qt, the session, the screen and the window — and then says whether the
+mascot came up:
+
+```
+  ✓ PySide6 6.8.1 imports
+  ✓ QApplication up (platform plugin: xcb, created by this check)
+    screen DP-1: 2560x1440 at 0,0  dpr 1.0
+  mascot window: 260x260 at 1096,-232  (size 168, anchor below_camera)
+    ✓ frameless
+    ✓ always-on-top
+    ✓ no-taskbar-entry
+    ✓ translucent
+  ✓ the mascot is on screen at 1096,-232, always on top, and the panel is up.
+```
+
+…and when it cannot, it names the one thing that is missing. `--overlay-check
+--save shot.png` also writes `shot-mascot.png` and `shot-panel.png`: what the
+windows actually contain, which is worth sending with any bug report.
+
+| What it says | Cause and fix |
+|---|---|
+| *PySide6.QtWidgets is not installed … libGL.so.1* | The Qt package is there and its libraries are not: `sudo apt install libgl1 libglx-mesa0` (Linux), or `pip install --force-reinstall PySide6-Essentials` (Windows/macOS, where the wheel ships everything). `pip install` alone cannot fix a system library. |
+| *libEGL.so.1 / libxkbcommon / libdbus-1 / libxcb-…* | Same shape, different package — the message prints the exact `apt`/`dnf` line for the one it found. |
+| *the 'offscreen' (or 'minimal') platform plugin* | `QT_QPA_PLATFORM` is set to a headless plugin: Qt runs, and shows nothing. Unset it to see the mascot, and keep it only for tests. |
+| *there is no DISPLAY and no WAYLAND_DISPLAY* | There is no desktop to draw on — a container or a server. Run Naveed on the host, or forward X11. |
+| *the mascot is outside …* | A remembered position from a monitor that is no longer attached. Delete `~/.naveed/state/overlay.json`, or set `OVERLAY_ANCHOR=below_camera`. |
+| *PySide6 6.12.x … known refcount bug* | Upstream, bisected here: the process aborts with `Fatal Python error: none_dealloc: deallocating None` once a few thousand gradient fills have gone through a `QPainter` — a few seconds of mascot animation at 45 fps. Install `pip install "PySide6-Essentials<6.12"` (the `ui` extra already carries that ceiling). |
+| *the mascot window was created but is not visible* | `OVERLAY_START_HIDDEN=true` puts it in the tray: set it to `false`, or use the tray's *Show*. |
+| Nothing at all, and `--check` says *interface: PySide6 missing* | `pip install "naveed[ui]"` — and note that Naveed will **not** open a browser page in its place: the window is the product. |
+
+Smaller things, once the window is up:
 
 | Symptom | Cause and fix |
 |---|---|
-| `--check` says *interface: not installed* | `pip install "naveed[ui]"` |
-| Crash mentioning `libGL.so.1` | Qt needs OpenGL. `sudo apt install libgl1 libegl1 libxkbcommon-x11-0`. In a container without a GPU, use `QT_QPA_PLATFORM=offscreen` (it will run, invisibly). |
-| Runs, but nothing shows on Linux/Wayland | Wayland hides global windows by design. Use XWayland (`QT_QPA_PLATFORM=xcb`), or your compositor's "always on top" rule. |
 | It is behind every window | Another app's always-on-top rule is winning. `OVERLAY_ALWAYS_ON_TOP=true` plus the panel's *pin* toggle re-applies it. On macOS, use full-screen or *Do Not Disturb* rather than a full-screen app's own space. |
+| Nothing shows on native Wayland | Wayland hides global window positions by design, so the mascot can land somewhere useless. Run under XWayland (`QT_QPA_PLATFORM=xcb`), or add a compositor rule for "always on top". `--overlay-check` names the plugin in use. |
 | No tray icon | Some desktops need `libayatana-appindicator3-1`. The tray is optional — the mascot and the hotkey do everything the menu does. |
-| `QWidget: Must construct a QApplication before a QWidget` | Fixed: the reusable `QApplication` is now created before any widget. If you see it in an old checkout, `git pull` — the mascot could never appear with that bug present. |
-| It appeared somewhere off screen | `OVERLAY_ANCHOR=below_camera` (the default) puts it centred under the webcam bezel. A remembered position from a monitor that is no longer attached is clamped back on screen; `OVERLAY_REMEMBER_POSITION=false` forgets it. |
+| `QWidget: Must construct a QApplication before a QWidget` | Fixed in 0.2.0: the reusable `QApplication` is created before any widget. If you see it in an old checkout, `git pull`. |
 
 ## The browser page
 
-The same bot is served at `http://127.0.0.1:8765` (`python -m naveed --serve` for
-the page on its own). [docs/BROWSER.md](BROWSER.md) is the full picture; the
+The same bot is served at `http://127.0.0.1:8765` when you ask for it —
+`python -m naveed --serve`, or `WEB_ENABLED=true` alongside the mascot. Plain
+`python -m naveed` opens no port at all. [docs/BROWSER.md](BROWSER.md) is the full picture; the
 failures worth knowing:
 
 | Symptom | Cause and fix |
@@ -56,7 +86,7 @@ failures worth knowing:
 | The page loads but every action says *lost the connection* | The server stopped. Restart it; the page reconnects on its own. |
 | `401` on everything | You bound beyond loopback (`--host 0.0.0.0`), so the token printed at startup is required: `http://host:8765/?token=…`. `--no-token` only for a network you trust. |
 | The port is not the one you configured | It was taken, and the bot picked a free one instead of refusing to start. The URL it printed is the right one. |
-| *Show mascot* does nothing | It starts `python -m naveed --no-serve` as a second process; run that by hand to see the error. Without PySide6 it reports the install line instead. |
+| *Show mascot* does nothing | It starts `python -m naveed` as a second process; run that by hand to see the error, or `python -m naveed --overlay-check` for the full diagnosis. |
 | It refuses every task with the model message | Deliberate: the page opens even when the model is dead, and says why instead of failing later. |
 
 ## "I could not reach my LLM API"

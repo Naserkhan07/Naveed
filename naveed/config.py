@@ -148,10 +148,12 @@ class OverlaySettings:
 
 @dataclass
 class WebSettings:
-    """The browser front end (the same bot, reachable over HTTP).
+    """The optional HTTP front end — the same bot, reachable over a browser.
 
-    Off by default *as a setting* because the launcher and the overlay turn it on
-    explicitly; ``OVERLAY``/``--no-serve`` turns it back off for a given run.
+    Off by default: Naveed is a floating desktop window, and the HTTP front end is
+    a deliberate second way in (``python -m naveed --serve``), not a fallback for
+    when the window cannot start. A machine where Qt is missing gets the reason,
+    not a web page.
     """
 
     host: str = "127.0.0.1"          # loopback unless you ask for more
@@ -160,7 +162,7 @@ class WebSettings:
     #: a container port on a network you already trust; loopback never needs one.
     token: bool = True
     open_browser: bool = False       # open the page automatically with the overlay
-    enabled: bool = True             # serve alongside the mascot by default
+    enabled: bool = False            # opt-in: --serve, or WEB_ENABLED=true
 
 
 @dataclass

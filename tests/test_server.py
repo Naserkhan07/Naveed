@@ -470,7 +470,12 @@ class OverlayWiringTests(unittest.TestCase):
 
 
 class LauncherServeTests(unittest.TestCase):
-    """`main.py` has to bring the bot up with no arguments — both halves of it."""
+    """`main.py` brings the bot up as a *window* — the browser is never implied.
+
+    These tests used to assert the opposite: that a machine without Qt, or a Qt
+    that could not open a window, quietly got the HTTP front end instead. That
+    fallback is exactly what "the bot did not appear" looked like, and it is gone.
+    """
 
     def setUp(self):
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -499,43 +504,55 @@ class LauncherServeTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "no arguments means: start the bot")
 
-    def test_a_machine_without_qt_gets_the_browser_bot(self):
-        app = SimpleNamespace(run_overlay=lambda **k: 0, run_server=lambda **k: k)
-        config = self.config()
-        with mock.patch("naveed.lazy.find_spec_safe", return_value=None):
-            result = self.main._start_everything(app, config, stream=io.StringIO())
-        self.assertTrue(result.get("open_browser"), "with no mascot, the browser tab is the bot")
+    def test_a_machine_without_qt_is_told_what_to_install(self):
+        started: List[str] = []
+        app = SimpleNamespace(
+            run_overlay=lambda **k: started.append("overlay") or 0,
+            run_server=lambda **k: started.append("server") or 0,
+        )
+        stream = io.StringIO()
+        with mock.patch("naveed.overlay.doctor.qt_available",
+                        return_value=(False, "Import error: libGL.so.1: cannot open shared object file")):
+            code = self.main._start_everything(app, self.config(), stream=stream)
+        text = stream.getvalue()
+        self.assertEqual(code, 2)
+        self.assertEqual(started, [], "no mascot, and no page either: say why instead")
+        self.assertIn("could not open its window", text)
+        self.assertIn("libgl1", text)
 
-    def test_the_mascot_starts_with_the_browser_front_end_alongside_it(self):
+    def test_the_mascot_starts_without_a_browser_unless_one_is_asked_for(self):
         called: Dict[str, Any] = {}
 
         def overlay(**kwargs):
             called.update(kwargs)
             return 0
 
-        app = SimpleNamespace(run_overlay=overlay, run_server=lambda **k: 0)
-        config = self.config()
-        with mock.patch("naveed.lazy.find_spec_safe", return_value=object()):
-            code = self.main._start_everything(app, config, stream=io.StringIO())
+        app = SimpleNamespace(
+            run_overlay=overlay, run_server=lambda **k: called.setdefault("server", k) or 0
+        )
+        with mock.patch("naveed.overlay.doctor.qt_available", return_value=(True, "6.8.1")):
+            code = self.main._start_everything(app, self.config(), stream=io.StringIO())
         self.assertEqual(code, 0)
-        self.assertTrue(called.get("serve"), "one process, one bot, two front ends")
+        self.assertNotIn("server", called, "the HTTP front end is opt-in")
+        self.assertFalse(called.get("open_browser"), "and so is opening a browser tab")
 
-    def test_a_window_that_cannot_open_falls_back_to_the_browser(self):
-        """A container without libGL must still give you a working bot."""
-        app = SimpleNamespace(run_overlay=lambda **k: 2, run_server=lambda **k: k)
-        config = self.config()
-        with mock.patch("naveed.lazy.find_spec_safe", return_value=object()):
-            result = self.main._start_everything(app, config, stream=io.StringIO())
-        self.assertTrue(result.get("open_browser"))
+    def test_a_window_that_cannot_open_is_explained_not_swapped_for_a_page(self):
+        app = SimpleNamespace(run_overlay=lambda **k: 2, run_server=lambda **k: 0)
+        stream = io.StringIO()
+        with mock.patch("naveed.overlay.doctor.qt_available", return_value=(True, "6.8.1")):
+            code = self.main._start_everything(app, self.config(), stream=stream)
+        self.assertEqual(code, 2)
+        self.assertIn("--overlay-check", stream.getvalue())
 
-    def test_the_first_run_hints_mention_the_browser_fallback(self):
+    def test_the_first_run_hints_name_the_window_check(self):
         config = self.config()
         stream = io.StringIO()
         with mock.patch("naveed.lazy.find_spec_safe", return_value=None):
             self.main._first_run_hints(config, stream=stream)
         text = stream.getvalue()
-        self.assertIn("browser", text)
+        self.assertIn("--overlay-check", text)
         self.assertIn('pip install "naveed[ui,capture,input]"', text)
+        self.assertNotIn("come up in your browser", text, "there is no silent browser fallback")
 
 
 if __name__ == "__main__":

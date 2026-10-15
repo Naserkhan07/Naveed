@@ -84,6 +84,13 @@ blocked action.
 Three newer ways to change things are held to the same rule as everything else —
 none of them is a path around the guard:
 
+* **A credential-labelled field is refused for reading, not only for writing.** A
+  field whose label names it as a password, token or key is skipped by
+  `read_field` too: a secret guard that only covers typing is half a guard, and
+  "show me what is in that box" is the other half. A value that merely *looks*
+  like a secret (`password=hunter2-xyz`) is refused inside a larger payload as
+  well, while a documented placeholder (`api_key: set-your-own`) stays editable —
+  the check is on the value's shape, not on the word.
 * **`edit_field` is a write.** `read_field`, `find` and `select_all` are `SAFE`;
   `edit_field` (and `paste`, `clear`, `save`, `undo`) are writes, and every action
   kind that writes text is listed in `WRITE_KINDS`. The secret rule is applied to
@@ -132,8 +139,9 @@ Who can reach it is part of the safety story, and it is deliberately narrow:
 * secrets are refused when *typing* them (above), so a page that someone else
   loaded still cannot be used to type your password into a field.
 
-If you would rather not have the surface at all, `python -m naveed --no-serve`
-starts the mascot and never opens a socket.
+The surface is off unless you ask for it: `python -m naveed` (the mascot) never
+opens a socket at all, and `--serve` is the only thing that listens — always with
+the token rule above.
 
 ## Shell actions
 

@@ -12,6 +12,47 @@ settings panel now say. A local server (the default) needs no credential at all;
 hosted gateway that insists on an `Authorization` header reads an optional
 `LLM_TOKEN`, which Naveed never asks for.
 
+### Fixed — "the mascot did not appear"
+
+The bot was crashing two seconds after it started, on the one PySide6 release most
+people get from `pip install PySide6` today:
+
+```
+Fatal Python error: none_dealloc: deallocating None: bug likely caused by a
+refcount error in a C extension
+Python runtime state: initialized
+```
+
+* **Root cause found and bisected.** PySide6 6.12.0 aborts the interpreter once a
+  few thousand gradients have been filled through a `QPainter` — a few seconds of
+  mascot at 45 fps, and always at the same place if you `faulthandler` it: inside
+  `QtCanvas.radial`/`gradient`. The same loop survives indefinitely on 6.8.1
+  (measured here: 4000 frames clean, 2000 frames fatal), so the `ui` and `full`
+  extras now carry `PySide6-Essentials>=6.5,<6.12`, and both `--check` and
+  `--overlay-check` name the version and print the command that fixes it when an
+  older install has it. This was also the last unexplained thing in
+  "the mascot shows up and then vanishes".
+* **`python -m naveed --overlay-check [--save PATH]`** answers *can this machine
+  put the window on screen, and if not, why not*: the Qt version, the platform
+  plugin, the session, the screens, whether the mascot's rectangle is actually
+  inside one, the frameless / always-on-top / no-taskbar / translucent flags, and
+  a verdict. Missing system libraries (`libGL.so.1`, `libEGL.so.1`,
+  `libxkbcommon`, `libxcb-*`, `libfontconfig`) get the exact `apt`/`dnf` line —
+  `pip install` cannot fix a system library, and the report says so. `--save`
+  writes `PATH-mascot.png` and `PATH-panel.png`: what the windows really contain.
+  Exit code 0 is "it is up", 1 is "it is up but something about it is wrong", 2 is
+  "Qt cannot run here".
+* **The browser is no longer a silent fallback.** `WebSettings.enabled` defaults
+  to `false`, `--serve` is the only thing that opens a listener, `--no-serve` is
+  gone, and `main.py` has no branch that swaps a window for a web page. A machine
+  where Qt cannot start is told which library is missing and how to install it —
+  "it quietly became a web page" is indistinguishable from "the bot did not
+  appear", which is how this bug hid.
+* Panel cosmetics: the status card's connection label says `No LLM API` and keeps
+  the sentence in its tooltip (the card is a fixed width and Qt does not
+  ellipsize), and the log area is transparent instead of painting the scroll
+  area's default light viewport inside the dark glass.
+
 ### Changed — configuration
 
 * `LLMSettings` is `base_url` + `model` + optional `token`. Nothing is required but

@@ -100,6 +100,7 @@ def _stylesheet() -> str:
     }}
     QCheckBox {{ color: {palette['panel_muted']}; spacing: 8px; }}
     QScrollArea {{ background: transparent; border: none; }}
+    QScrollArea > QWidget > QWidget, QWidget#LogHost {{ background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.18); border-radius: 3px; min-height: 24px; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
@@ -313,7 +314,13 @@ class ControlPanel:
 
                 texts = QtWidgets.QVBoxLayout()
                 texts.setSpacing(1)
-                facade._labels["connection"] = QtWidgets.QLabel("Offline — no LLM API")
+                # Deliberately short: the card is a fixed width beside the mini
+                # mascot, and "Offline — no LLM API" was clipped to "Offline — no
+                # LL" there. The long sentence lives in the tooltip.
+                facade._labels["connection"] = QtWidgets.QLabel("No LLM API")
+                facade._labels["connection"].setToolTip(
+                    "Naveed thinks with an LLM API — open the settings (the gear) and point me at one"
+                )
                 facade._labels["connection"].setObjectName("StatusStrong")
                 facade._labels["connection"].setStyleSheet(f"color: {PALETTE['offline']};")
                 facade._labels["model"] = QtWidgets.QLabel("no model")
@@ -413,6 +420,9 @@ class ControlPanel:
                 area.setWidgetResizable(True)
                 area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                 self.log_host = QtWidgetsLocal.QWidget()
+                self.log_host.setObjectName("LogHost")
+                self.log_host.setAutoFillBackground(False)
+                area.viewport().setAutoFillBackground(False)
                 self.log_layout = QtWidgets.QVBoxLayout(self.log_host)
                 self.log_layout.setContentsMargins(0, 0, 4, 0)
                 self.log_layout.setSpacing(3)
@@ -464,7 +474,11 @@ class ControlPanel:
         connection = self._labels.get("connection")
         if connection is not None:
             ready = bool(state.get("model_ready"))
-            connection.setText("Connected" if ready else "Offline — no LLM API")
+            connection.setText("Connected" if ready else "No LLM API")
+            connection.setToolTip(
+                "The LLM API is answering" if ready
+                else "Naveed thinks with an LLM API — open the settings (the gear) and point me at one"
+            )
             connection.setStyleSheet(f"color: {PALETTE['connected'] if ready else PALETTE['offline']};")
         model = self._labels.get("model")
         if model is not None:

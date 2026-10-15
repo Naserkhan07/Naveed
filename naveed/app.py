@@ -6,7 +6,7 @@ exactly one place that decides what "starting Naveed" means, which matters
 because there are three quite different ways to run it:
 
 ``overlay``   the normal one: mascot on screen, panel, tray, voice — and, unless
-              ``--no-serve`` is given, the browser front end on the same bridge;
+              ``serve=True`` is passed, the browser front end on the same bridge;
 ``agent``     headless single task (``--prompt "do X"``) — how you test the loop
               without a display, and how a power user scripts it;
 ``serve``     the browser front end alone (``--serve``): the same bot, no window,
@@ -93,7 +93,34 @@ class NaveedApp:
             print(f"              {mark} {report.get('model_probe', '')}", file=stream)
             if not reachable:
                 print("              start it, or pick another provider: python -m naveed --setup --provider openai", file=stream)
-        print(f"  interface   {'✓ PySide6 installed' if report['ui'] else '✗ PySide6 missing (no mascot)'}", file=stream)
+        if report["ui"]:
+            # "PySide6 is importable" and "a window can open" are different
+            # questions: a package whose libGL.so.1 is missing imports fine and
+            # shows nothing, which is the confusing half of the same bug.
+            from .overlay.doctor import library_hint, qt_available
+
+            usable, detail = qt_available()
+            if usable:
+                print(f"  interface   ✓ PySide6 {detail} — the mascot can start", file=stream)
+                from .overlay.doctor import pyside_warning
+
+                unstable = pyside_warning(str(detail))
+                if unstable:
+                    for line in unstable.splitlines():
+                        print(f"              ! {line}", file=stream)
+            else:
+                print("  interface   ✗ PySide6 is installed, but no window can open", file=stream)
+                for line in str(detail).splitlines():
+                    print(f"              {line}", file=stream)
+                hint = library_hint(str(detail))
+                if hint:
+                    print("              install the system library it needs:", file=stream)
+                    for line in hint.splitlines():
+                        if line.strip():
+                            print(f"                {line.strip()}", file=stream)
+                print("              diagnose it: python -m naveed --overlay-check", file=stream)
+        else:
+            print("  interface   ✗ PySide6 missing (no mascot)", file=stream)
         print(f"  capture     backends: {', '.join(report['capture_backends']) or 'none'}", file=stream)
         print(f"              screen access: {report['screen_access']}", file=stream)
         print(f"  input       backends: {', '.join(report['input_backends']) or 'none'}", file=stream)
@@ -111,16 +138,18 @@ class NaveedApp:
         self,
         *,
         prompt: Optional[str] = None,
-        serve: bool = True,
+        serve: bool = False,
         host: Optional[str] = None,
         port: Optional[int] = None,
         open_browser: bool = False,
     ) -> int:
-        """Start the floating companion (the normal way to run Naveed).
+        """Start the floating companion — this *is* Naveed.
 
-        ``serve=True`` also brings up the browser front end on the overlay's own
-        bridge, so ``python -m naveed`` gives you the mascot *and* a page at
-        http://127.0.0.1:8765 that drives the very same bot.
+        ``serve=True`` additionally brings up the optional HTTP front end on the
+        overlay's own bridge, so both drive one bot. It is off by default: a
+        desktop companion that quietly becomes a web page when Qt cannot start is
+        not the thing anyone asked for, so that case is reported instead (see
+        :meth:`overlay_check`).
         """
         from .overlay.bridge import OverlayApp
 
@@ -136,14 +165,42 @@ class NaveedApp:
         try:
             return self.overlay.run()
         except lazy.MissingDependencyError as error:
-            print(error, file=sys.stderr)
-            print(install_hint_text(), file=sys.stderr)
+            self._explain_qt_problem(error)
             return 2
         finally:
             try:
                 self.bridge.stop()
             except Exception:
                 pass
+
+    def overlay_check(self, *, save: str = "") -> int:
+        """Report whether the floating window can appear, and why not.
+
+        "I ran it and nothing came up" is the one bug report that cannot be
+        answered from a distance, so this asks the machine: is Qt usable, is
+        there a screen, does the window end up visible and on top — and, with
+        ``save``, what does the window contain?
+        """
+        from .overlay.doctor import run_check
+
+        return run_check(self.config, save=save)
+
+    def _explain_qt_problem(self, error: BaseException) -> None:
+        """Say what a Qt failure means, in the terms of the machine it happened on."""
+        from .overlay.doctor import library_hint
+
+        text = str(error)
+        print(text, file=sys.stderr)
+        hint = library_hint(text)
+        if hint:
+            print(file=sys.stderr)
+            print("That library is a system package, not a pip one:", file=sys.stderr)
+            for line in hint.splitlines():
+                if line.strip():
+                    print(f"  {line.strip()}", file=sys.stderr)
+        print(file=sys.stderr)
+        print('Without Qt there is no window. Try: pip install "naveed[ui]"', file=sys.stderr)
+        print("Then: python -m naveed --overlay-check     # says exactly what is missing", file=sys.stderr)
 
     def run_server(
         self,

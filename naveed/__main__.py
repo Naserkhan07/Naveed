@@ -3,11 +3,11 @@
 Modes
 -----
 ``python -m naveed``                      start the floating companion
-``python -m naveed --serve``              the same bot in a browser, no GUI
+``python -m naveed --overlay-check``      can the window appear here, and why not
 ``python -m naveed --prompt "open X"``    run one task headlessly
 ``python -m naveed --watch``              watch the screen, print a timeline
 ``python -m naveed --check``              report what is installed/possible
-``python -m naveed --serve``              the same bot in a browser, no GUI
+``python -m naveed --serve``              the HTTP front end only, no window (optional)
 ``python -m naveed --train NAME``         learn a task by demonstration (Polarion, or anything else)
 ``python -m naveed --polarion-check``     is the Polarion API fast path working?
 ``python -m naveed --setup``              write ~/.naveed/config.env
@@ -45,9 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with the offline voice")
     parser.add_argument("--screenshot", action="store_true", help="take one screenshot and print the path")
 
-    web = parser.add_argument_group("the browser front end")
-    web.add_argument("--serve", action="store_true", help="serve the bot over HTTP only (no mascot, works without PySide6)")
-    web.add_argument("--no-serve", action="store_true", help="start the mascot without the browser front end")
+    window = parser.add_argument_group("the floating window (the main way to run Naveed)")
+    window.add_argument("--overlay-check", action="store_true",
+                        help="can the mascot appear here? Qt, the screen, the window — and why not")
+    window.add_argument("--save", metavar="PATH",
+                        help="with --overlay-check: write what the windows contain to PATH-mascot.png / PATH-panel.png")
+
+    web = parser.add_argument_group("the browser front end (optional, off by default)")
+    web.add_argument("--serve", action="store_true", help="run the HTTP front end *instead of* the window (works without PySide6)")
     web.add_argument("--host", metavar="HOST", help="interface to listen on (default 127.0.0.1; 0.0.0.0 needs the printed token)")
     web.add_argument("--port", type=int, metavar="PORT", help="port for the browser front end (default 8765, or the next free one)")
     web.add_argument("--open-browser", action="store_true", help="open the page in your browser once it is up")
@@ -187,6 +192,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             countdown=float(args.countdown or 0.0) if args.train else 0.0,
             skill=args.skill or "",
         )
+    if args.overlay_check:
+        return app.overlay_check(save=args.save or "")
     if args.run_recipe:
         return app.run_recipe(args.run_recipe, _pairs(args.arg))
     if args.export_training:
@@ -195,12 +202,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return app.run_task(args.prompt)
     if args.serve:
         return app.run_server(host=args.host, port=args.port, open_browser=args.open_browser)
-    return app.run_overlay(
-        serve=not args.no_serve,
-        host=args.host,
-        port=args.port,
-        open_browser=args.open_browser,
-    )
+    # `python -m naveed` is the floating window, full stop. The HTTP front end is
+    # a separate, explicit choice (`--serve`): a desktop bot that silently turns
+    # into a web page on the machines where Qt cannot start is not the product.
+    return app.run_overlay(open_browser=args.open_browser)
 
 
 if __name__ == "__main__":

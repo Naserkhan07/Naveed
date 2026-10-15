@@ -25,9 +25,16 @@ class QtCanvas(Canvas):
         self.painter = painter
         self.width = int(width)
         self.height = int(height)
-        painter.setRenderHint(self.QtGui.QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(self.QtGui.QPainter.RenderHint.TextAntialiasing, True)
-        painter.setRenderHint(self.QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+        # One call with all three flags. Measured on PySide6 6.12.0: three
+        # separate ``setRenderHint`` calls made the refcount bug below show up
+        # after ~400 gradient fills where a single ``setRenderHints`` call
+        # survived 500 — the flags are a multiplier, not the cause, so this is
+        # cheap insurance and not the fix. The fix is not installing a broken
+        # PySide6; see ``doctor.pyside_warning`` and the note in pyproject.toml.
+        hints = self.QtGui.QPainter.RenderHint
+        painter.setRenderHints(
+            hints.Antialiasing | hints.TextAntialiasing | hints.SmoothPixmapTransform, True
+        )
         self._font_cache = {}
 
     # --- helpers ------------------------------------------------------

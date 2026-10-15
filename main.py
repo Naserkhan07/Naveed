@@ -11,19 +11,20 @@ from "run the bot":
 3. tells you the truth about the LLM API *before* the bot appears — a configured
    address that nothing is answering on is the single most confusing failure, so
    it is reported here rather than after a task dies;
-4. starts the bot: the mascot appears centred just below the camera and can be
-   clicked to open the panel and talk, and the same bot is also served to your
-   browser (``http://127.0.0.1:8765``) so you can type to it from a real text box.
+4. starts the bot: the mascot appears centred just below the camera, and clicking
+   it opens the panel and the task box.
 
-If PySide6 is not installed there is no floating mascot, but that is not a reason
-to leave you with nothing: the browser half needs only the standard library, so
-the bot comes up there instead.
+**This is a desktop window, and only a desktop window.** If PySide6 — or one of
+the system libraries Qt links against — is missing, main.py says exactly what is
+missing and how to install it instead of quietly turning into something else. The
+optional HTTP front end is a separate command (``python main.py --serve``).
 
 Run it with Python:
 
-    python main.py                 # start the bot (mascot + browser)
+    python main.py                 # start the bot: the floating window
+    python main.py --overlay-check # does the window come up? and why not
     python main.py --check         # report what is installed, then exit
-    python main.py --serve         # the same bot in a browser only, no window
+    python main.py --serve         # optional: the same bot over HTTP, no window
     python main.py -p "..."        # headless one-shot task
 
 Everything after ``--`` is passed straight to Naveed, so every documented flag
@@ -81,7 +82,7 @@ def _first_run_hints(config, *, stream=None) -> None:
             print(f"  • {what}\n      {how}", file=stream)
         print('  (one command does all three: pip install "naveed[ui,capture,input]")', file=stream)
         if any(what.startswith("no PySide6") for what, _ in missing):
-            print("  without PySide6 I will still come up in your browser — no window needed.", file=stream)
+            print("  without PySide6 there is no floating window — see python main.py --overlay-check", file=stream)
         print()
 
     if not config.source_file or not config.llm.configured:
@@ -184,35 +185,48 @@ def main(argv=None) -> int:
 
 
 def _start_everything(app, config, *, stream=None) -> int:
-    """Bring the bot up, with the mascot when there is Qt and a browser either way.
+    """Bring the bot up: the floating window, or the reason it cannot appear.
 
-    The browser half is normally started *by the overlay* (it hands over its own
-    bridge, so both front ends drive one bot). The interesting case is the machine
-    with no PySide6 — or one where Qt cannot open a window at all, which happens in
-    containers that have no ``libGL.so.1``. Instead of printing an install hint and
-    exiting, the bot comes up in the browser, because that half needs nothing but
-    the standard library.
+    There is deliberately no fallback to the HTTP front end here. A desktop
+    companion that silently becomes a web page on the machines where Qt cannot
+    start is the single most confusing thing this program could do — it looks
+    exactly like "the bot did not appear", and it was true for anyone whose Qt
+    needed a system library that was not installed. So: check first, name the
+    problem, and only start a window that can actually be on screen.
     """
     stream = stream or sys.stdout
     try:
-        from naveed import lazy
+        from naveed.overlay.doctor import library_hint, qt_available
     except ImportError:  # pragma: no cover - naveed itself is missing
         return 1
 
-    if lazy.find_spec_safe("PySide6") is None:
-        print("No PySide6, so there is no floating mascot on this machine.", file=stream)
-        print('  install it with: pip install "naveed[ui]"', file=stream)
-        print("  until then, the same bot is in your browser — opening it now:", file=stream)
-        print()
-        return app.run_server(open_browser=True)
+    usable, detail = qt_available()
+    if not usable:
+        print("Naveed could not open its window on this machine.", file=stream)
+        print(file=stream)
+        for line in str(detail).splitlines():
+            print(f"  {line}", file=stream)
+        print(file=stream)
+        print('Install the window: pip install "naveed[ui]"', file=stream)
+        hint = library_hint(str(detail))
+        if hint:
+            print("…and the system library Qt needs (that one is not a pip package):", file=stream)
+            for line in hint.splitlines():
+                if line.strip():
+                    print(f"  {line.strip()}", file=stream)
+        print(file=stream)
+        print("Then ask again — it names exactly what is missing:", file=stream)
+        print("  python main.py --overlay-check", file=stream)
+        print(file=stream)
+        print("Prefer a text box? The same bot can run over HTTP instead (optional):", file=stream)
+        print("  python main.py --serve", file=stream)
+        return 2
 
-    code = app.run_overlay(serve=bool(getattr(config.web, "enabled", True)), open_browser=False)
-    if code == 2 and getattr(config.web, "enabled", True):
-        # Qt is installed but could not open a window (a missing libGL, most
-        # often). Talk to the bot in the browser rather than to nothing.
-        print("The window could not open, so the bot is coming up in your browser instead:", file=stream)
-        print()
-        return app.run_server(open_browser=True)
+    code = app.run_overlay(open_browser=False)
+    if code == 2:
+        print(file=stream)
+        print("The window did not come up. `python main.py --overlay-check` reports", file=stream)
+        print("which part failed (the Qt platform plugin, the screen, or the window).", file=stream)
     return code
 
 

@@ -28,7 +28,13 @@ dependencies = []
 
 [project.optional-dependencies]
 # --- the visible companion -------------------------------------------------
-ui = ["PySide6-Essentials>=6.5"]
+# The ceiling is deliberate. PySide6 6.12.0 has a refcount regression that the
+# mascot hits: the process dies with "Fatal Python error: none_dealloc:
+# deallocating None" once a few thousand gradient fills have gone through a
+# QPainter — which, at 45 fps, is a few seconds of animation. Bisected in this
+# repo: the same loop aborts on 6.12.0 and survives indefinitely on 6.8.1.
+# Raise it once upstream is fixed (see docs/TROUBLESHOOTING.md).
+ui = ["PySide6-Essentials>=6.5,<6.12"]
 # --- seeing the screen -----------------------------------------------------
 capture = ["mss>=9.0", "Pillow>=10.0"]
 # --- doing things to the screen --------------------------------------------
@@ -41,7 +47,7 @@ ocr = ["pytesseract>=0.3.10"]
 llm = ["httpx>=0.26"]
 # --- everything a normal desktop wants -------------------------------------
 full = [
-  "PySide6-Essentials>=6.5",
+  "PySide6-Essentials>=6.5,<6.12",   # see the note on the `ui` extra
   "mss>=9.0",
   "Pillow>=10.0",
   "pynput>=1.7",
