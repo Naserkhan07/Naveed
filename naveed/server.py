@@ -51,7 +51,7 @@ from .webui import PAGE
 
 logger = logging.getLogger("naveed.server")
 
-__all__ = ["BotServer", "EventLog", "EventFeed", "DEFAULT_HOST", "DEFAULT_PORT", "serve"]
+__all__ = ["BotServer", "EventLog", "EventFeed", "DEFAULT_HOST", "DEFAULT_PORT", "serve", "main"]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -727,7 +727,65 @@ def serve(
     host: Optional[str] = None,
     port: Optional[int] = None,
     console: bool = True,
+    open_browser: bool = False,
 ) -> int:
     """Blocking helper: ``python -m naveed --serve`` ends up here."""
     server = BotServer(config, host=host, port=port, console=console)
+    if open_browser:
+        threading.Timer(0.6, lambda: _open_url(server.url)).start()
     return server.serve_forever()
+
+
+def _open_url(url: str) -> None:
+    """Open *url* in the desktop browser, ignoring a machine that has none."""
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:
+        logger.debug("no browser for %s", url)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """``naveed-web``: the browser front end as its own command.
+
+    The same thing as ``python -m naveed --serve``, for people who installed the
+    package and never want to think about a window::
+
+        naveed-web                       # http://127.0.0.1:8765
+        naveed-web --host 0.0.0.0        # reachable from your LAN (token required)
+        naveed-web --port 0 --quiet      # any free port, no event echo
+    """
+    import argparse
+
+    from .config import load_config
+
+    parser = argparse.ArgumentParser(
+        prog="naveed-web",
+        description="Naveed in your browser — the same bot, served over HTTP (no GUI needed).",
+    )
+    parser.add_argument("--host", metavar="HOST", help="interface to listen on (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, metavar="PORT", help="port to listen on (default 8765, or the next free one)")
+    parser.add_argument("--open-browser", action="store_true", help="open the page once it is up")
+    parser.add_argument("--no-token", action="store_true", help="do not require the token when listening beyond loopback")
+    parser.add_argument("--quiet", action="store_true", help="do not echo every event to the terminal")
+    parser.add_argument("--check", action="store_true", help="print the environment report and exit")
+    args = parser.parse_args(argv)
+
+    config = load_config(**({"web.token": False} if args.no_token else {}))
+    if args.host:
+        config.web.host = args.host
+    if args.port is not None:
+        config.web.port = int(args.port)
+    if args.check:
+        from .app import NaveedApp
+
+        NaveedApp(config).print_report()
+        return 0
+    return serve(
+        config,
+        host=config.web.host,
+        port=config.web.port,
+        console=not args.quiet,
+        open_browser=args.open_browser,
+    )

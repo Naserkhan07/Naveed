@@ -32,6 +32,7 @@ class TrayIcon:
         on_look: Optional[Callable[[], None]] = None,
         on_screenshot: Optional[Callable[[], None]] = None,
         on_settings: Optional[Callable[[], None]] = None,
+        on_open_page: Optional[Callable[[], None]] = None,
         on_quit: Optional[Callable[[], None]] = None,
     ) -> None:
         self.config = config
@@ -40,6 +41,8 @@ class TrayIcon:
         self.on_look = on_look
         self.on_screenshot = on_screenshot
         self.on_settings = on_settings
+        #: opens the browser front end; only offered when it is actually running
+        self.on_open_page = on_open_page
         self.on_quit = on_quit
         self.icon: Any = None
 
@@ -65,6 +68,8 @@ class TrayIcon:
         menu.addSeparator()
         add("What is on my screen?", self.on_look)
         add("Take a screenshot", self.on_screenshot)
+        if self.on_open_page is not None:
+            add("Open in browser", self.on_open_page)
         add("Settings…", self.on_settings)
         menu.addSeparator()
         add("Quit Naveed", self.on_quit)

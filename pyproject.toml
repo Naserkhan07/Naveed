@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "naveed"
-version = "0.1.0"
-description = "A floating desktop AI companion that watches your screen and does the task on it"
+version = "0.2.0"
+description = "A floating desktop AI companion that watches your screen and does the task on it, with an optional browser front end"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
-keywords = ["desktop-agent", "computer-use", "screen-watching", "assistant", "overlay", "accessibility"]
+keywords = ["desktop-agent", "computer-use", "screen-watching", "assistant", "overlay", "accessibility", "local-web-ui"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: X11 Applications",
@@ -51,12 +51,18 @@ dev = ["pytest>=7.4", "pillow>=10.0"]
 
 [project.scripts]
 naveed = "naveed.__main__:main"
+# the browser front end on its own: no PySide6, no window, standard library only
+naveed-web = "naveed.server:main"
 
 [project.urls]
 Homepage = "https://github.com/Naserkhan07/Naveed"
 Issues = "https://github.com/Naserkhan07/Naveed/issues"
 
 [tool.setuptools]
+# Every sub-package has to be listed: an installed copy that is missing
+# naveed.skills has no Polarion pack and no learned routines, and the failure
+# only shows up when someone runs --skills. `tests/test_launcher.py` asserts this
+# list matches the directories on disk.
 packages = [
   "naveed",
   "naveed.screen",
@@ -64,12 +70,10 @@ packages = [
   "naveed.agent",
   "naveed.control",
   "naveed.speech",
+  "naveed.skills",
   "naveed.render",
 ]
 include-package-data = true
-
-[tool.setuptools.package-data]
-"naveed" = ["../assets/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

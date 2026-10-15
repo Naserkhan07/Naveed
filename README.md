@@ -7,6 +7,11 @@ floats above every window, period. Click it, say or type what you want, and it
 looks at your actual screen, moves your actual mouse and keyboard, and tells you
 what it did.
 
+The same bot is also served to a local browser — `python -m naveed --serve`, one
+page, no framework, nothing installed beyond Python — because a long instruction is
+easier to type in a text box and easier to read back in a scrollback. Both front
+ends drive **one** bot; see [The browser](#the-browser).
+
 <p align="center">
   <img src="docs/assets/naveed-desktop.png" alt="Naveed floating over a code editor with its control panel above it" width="820">
   <br>
@@ -31,6 +36,11 @@ what it did.
   `tidy up my desktop`. A small vision model looks at the screenshot Naveed just
   took and replies with **actions** — click, type, press, scroll, open — which
   Naveed performs on your real machine.
+- **Shows up in your browser too, if a text box is handier.** `python -m naveed
+  --serve` puts the same bot on `http://127.0.0.1:8765` — a live log of every
+  action, a status card, the quick actions, and a box for answering its questions.
+  Standard library only, loopback only, no assets fetched from the internet, and it
+  runs on a machine with no Qt at all.
 - **Verifies its own work.** After acting, Naveed waits for the screen to settle
   and compares before/after. If nothing changed, it knows the click did nothing,
   says so, and tries a different route instead of looping forever.
@@ -156,7 +166,7 @@ model       qwen2.5vl:7b @ 127.0.0.1:11434  ✓ configured
 | **`Ctrl+Alt+Space`** | The same thing from anywhere (configurable). |
 | **Drag the mascot** | Moves it anywhere; the panel follows if it is open. |
 | **Double-click it** | Opens/closes the control panel. |
-| **Right-click it** | Menu: talk, panel, "what is on my screen?", screenshot, settings, quit. |
+| **Right-click it** | Menu: talk, panel, "what is on my screen?", screenshot, open in browser, settings, quit. |
 | **Panel → Listen** | Same as clicking the mascot. |
 | **Panel → Stop** | Cancels the current task immediately. |
 | **Panel shortcuts** | *Look at screen, Summarise, Screenshot, Explain error, Write for me, Clean up, Translate, Automate.* |
@@ -200,6 +210,7 @@ API (`/api/state`, `/api/task`, …) and how to script it or embed it.
 ```bash
 python -m naveed                          # the floating companion (normal use)
 python -m naveed --serve                  # the same bot as a local web page
+naveed-web                                # …the same thing, as a console script
 python -m naveed -p "open notepad and type hello"   # one task, headless, prints each step
 python -m naveed --watch                  # watch the screen and print the world model
 python -m naveed --screenshot             # one capture, prints the path
@@ -215,10 +226,12 @@ python -m naveed --teach release-my-item --teach-seconds 45   # learn one by dem
 python -m naveed --run-recipe release-my-item --arg work_item_id=PROJ-1042 --dry-run
 ```
 
-Two guides go with the taught-knowledge flags:
+Guides for the parts that need more than a flag:
 [`docs/EDITING.md`](docs/EDITING.md) for changing text that is already on screen,
-and [`docs/POLARION.md`](docs/POLARION.md) for the Polarion pack and how training
-by demonstration works (and what it deliberately is not).
+[`docs/POLARION.md`](docs/POLARION.md) for the Polarion pack and how training by
+demonstration works (and what it deliberately is not), and
+[`docs/BROWSER.md`](docs/BROWSER.md) for the HTTP front end and its API.
+[`CHANGELOG.md`](CHANGELOG.md) has what changed, and when.
 
 ---
 
@@ -324,13 +337,14 @@ Details and the exact keyword/pattern lists: [`docs/SAFETY.md`](docs/SAFETY.md).
 | Screen capture | macOS: *Screen Recording* permission · Windows: none extra · Linux: X11 |
 | Input control | macOS: *Accessibility* permission · Windows: none extra · Linux: X11/portal |
 | Optional | A microphone for voice, `pytesseract` for OCR-based target lookup |
+| The browser front end | Nothing extra: standard library only, and it runs on a machine with no Qt at all (`python -m naveed --serve`) |
 
 ## Troubleshooting
 
 Common problems and their fixes live in
 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — black screenshots,
-"no input backend", a silent voice, the mascot swallowing clicks, and more.
-Start with:
+"no input backend", a silent voice, the mascot swallowing clicks, a browser page
+that lost its connection, and more. Start with:
 
 ```bash
 python -m naveed --check
@@ -339,7 +353,7 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 282 tests, no display required
+python -m unittest discover -s tests -v      # 286 tests, no display required
 ```
 
 | File | Covers |
@@ -370,11 +384,12 @@ naveed/
   speech/            audio helpers, offline STT, offline TTS, voice loop
   render/            canvas protocol + Pillow and Qt back-ends, previews
   skills/            knowledge packs, the Polarion pack, the recorder/distiller, learned routines
-docs/                architecture, screen watching, actions, safety, editing, Polarion, troubleshooting
+docs/                architecture, screen watching, actions, safety, editing, browser, Polarion, troubleshooting
 main.py              the launcher (double-click this one)
 scripts/             install.sh, install.ps1
 tests/               the suite above
 examples/            a fully commented config.env
+CHANGELOG.md         what changed, version by version
 ```
 
 ## Credits

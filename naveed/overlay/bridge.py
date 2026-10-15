@@ -160,6 +160,7 @@ class OverlayApp:
 
                 self.tray = TrayIcon(
                     self.config,
+                    on_open_page=self._open_page if self.server else None,
                     on_toggle_panel=lambda: self._on_toggle_panel(),
                     on_listen=self._on_listen,
                     on_look=lambda: self._on_quick("look"),
@@ -264,6 +265,11 @@ class OverlayApp:
         # Keep running when the last window is hidden (the tray owns the app).
         app.setQuitOnLastWindowClosed(False)
         return int(app.exec())
+
+    def _open_page(self) -> None:
+        """Tray/toolbar action: open the browser front end, if it is running."""
+        if self.server is not None:
+            _open_in_browser(self.server.url)
 
     def start_browser(self, *, port: Optional[int] = None) -> Optional[str]:
         """Serve the browser front end on this process's bot; return its URL.

@@ -8,6 +8,9 @@ same bot — over HTTP, in a browser.
 python -m naveed                 # mascot on screen, page at http://127.0.0.1:8765
 python -m naveed --serve         # the page only; no Qt needed at all
 python main.py                   # same as `python -m naveed`: both halves
+naveed-web                       # the same as --serve, as a console script
+naveed-web --open-browser        # …and open it for me
+naveed-web --check               # the environment report, then exit
 ```
 
 Why it exists: the mascot is perfect for "look at this and do it", and a browser
@@ -20,7 +23,7 @@ products — just two windows onto the same one.
 | Running | What you get |
 |---|---|
 | `python main.py` · `python -m naveed` | mascot **and** the page, together, sharing one `AgentBridge` (one screen watcher, one task queue) |
-| `python -m naveed --serve` | the page only, blocking in the terminal; events are echoed there too (stdout, `Ctrl+C` stops it) |
+| `python -m naveed --serve` · `naveed-web` | the page only, blocking in the terminal; events are echoed there too (stdout, `Ctrl+C` stops it) |
 | `python -m naveed --no-serve` | the mascot only, no HTTP listener |
 
 In the first case a task typed in the browser moves the mascot: the panel shows

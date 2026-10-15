@@ -59,6 +59,9 @@ echo "Then open the panel's settings (the gear icon) and paste your model key,"
 echo "or point Naveed at a local model:"
 echo "  $NAVEED --setup --force --provider ollama"
 echo
+echo "Prefer a text box, or no window at all? The same bot runs in your browser:"
+echo "  $NAVEED --serve                    # http://127.0.0.1:8765 (no PySide6 needed)"
+echo
 echo "Check everything at any time with:"
 echo "  $NAVEED --check"
 echo "  $NAVEED --portrait ~/naveed.png    # see the mascot without starting it"

@@ -8,6 +8,7 @@ see, and it passes everything else through to the real CLI.
 
 from __future__ import annotations
 
+import importlib
 import io
 import os
 import subprocess
@@ -24,6 +25,46 @@ sys.path.insert(0, str(ROOT))
 import main as launcher  # noqa: E402  (the file under test, by design)
 
 from naveed.config import Config, load_config  # noqa: E402
+
+
+class PackagingTests(unittest.TestCase):
+    """The install has to contain everything the code imports.
+
+    `naveed.skills` was missing from `[tool.setuptools] packages`, which no test
+    could notice on a cloned checkout (the directory is there) but which removed
+    the Polarion pack and every learned routine from an installed copy.
+    """
+
+    def test_every_sub_package_is_listed_for_installation(self):
+        import tomllib
+
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        listed = set(pyproject["tool"]["setuptools"]["packages"])
+        on_disk = {"naveed"}
+        for path in (ROOT / "naveed").iterdir():
+            if path.is_dir() and (path / "__init__.py").exists():
+                on_disk.add(f"naveed.{path.name}")
+        self.assertEqual(sorted(on_disk - listed), [], "these would be missing from a pip install")
+
+    def test_the_console_scripts_point_at_real_callables(self):
+        import tomllib
+
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        scripts = pyproject["project"]["scripts"]
+        self.assertIn("naveed", scripts)
+        self.assertIn("naveed-web", scripts)
+        for target in scripts.values():
+            module_name, _, attribute = target.partition(":")
+            module = importlib.import_module(module_name)
+            self.assertTrue(callable(getattr(module, attribute)), target)
+
+    def test_the_versions_agree(self):
+        import tomllib
+
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        import naveed
+
+        self.assertEqual(pyproject["project"]["version"], naveed.__version__)
 
 
 class ImportTests(unittest.TestCase):

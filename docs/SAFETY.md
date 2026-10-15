@@ -103,6 +103,38 @@ none of them is a path around the guard:
 * **An unconfirmed write is refused by name** — "you did not confirm it" — rather
   than performed quietly or retried until the user clicks yes.
 
+## The browser front end
+
+`python -m naveed --serve` (and the panel's *Show mascot* in reverse) exposes the
+same bot over HTTP. It is **the same code path**: a task submitted to
+`POST /api/task` goes to the same `AgentBridge`, the same planner and the same
+`SafetyGuard` as a task typed into the panel, so every rule above applies
+unchanged. Nothing about the web layer can perform an action the desktop UI could
+not.
+
+What the API can and cannot do:
+
+| Endpoint | Reach |
+|---|---|
+| `POST /api/task`, `/api/answer`, `/api/cancel` | Queue, answer and stop tasks — i.e. exactly what clicking the mascot does, with the guard still in the way. |
+| `POST /api/recipe` | Run a *taught* routine. Recipes are recorded keystrokes, and they still go through `SafetyGuard.inspect`; a recorded step that deletes something is confirmed just like a model's step. |
+| `GET /api/screen` | The newest capture — the same frame the model was shown, on the same machine. Nothing is uploaded by this endpoint. |
+| `POST /api/overlay`, `/api/quit` | Start the mascot, stop the server. |
+| — | There is no endpoint that reads your files, runs a shell or types your secrets. `shell` stays off unless `SAFETY_ALLOW_SHELL=true`, wherever the task came from. |
+
+Who can reach it is part of the safety story, and it is deliberately narrow:
+
+* the default bind is `127.0.0.1` — loopback, so the page is not on your network;
+* `--host 0.0.0.0` requires the token printed at startup on every request,
+  compared with `hmac.compare_digest`;
+* `--no-token` is for a container port or a tunnel that authenticates upstream, and
+  it says what it is doing in `--check` and at startup;
+* secrets are refused when *typing* them (above), so a page that someone else
+  loaded still cannot be used to type your password into a field.
+
+If you would rather not have the surface at all, `python -m naveed --no-serve`
+starts the mascot and never opens a socket.
+
 ## Shell actions
 
 Shell execution is **off by default** (`SAFETY_ALLOW_SHELL=false`) and off in the

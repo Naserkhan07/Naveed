@@ -46,4 +46,7 @@ Write-Host "Then open the panel's settings (the gear icon) and paste your model 
 Write-Host "or point Naveed at a local model:"
 Write-Host "  $naveedBin --setup --force --provider ollama"
 Write-Host ""
+Write-Host "Prefer a text box, or no window at all? The same bot runs in your browser:"
+Write-Host "  $naveedBin --serve                 # http://127.0.0.1:8765 (no PySide6 needed)"
+Write-Host ""
 Write-Host "Check everything at any time with:  $naveedBin --check"
