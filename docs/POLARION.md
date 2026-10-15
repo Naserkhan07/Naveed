@@ -128,7 +128,14 @@ python3 -m naveed --teach release-my-item --teach-seconds 45 \
 # you do the task by hand, in Polarion, while Naveed records events
 ```
 
-What happens to the recording:
+Recording watches your real input, so it needs the input extra:
+
+```bash
+pip install "naveed[input]"      # pynput
+```
+
+Without it, `--teach` says so and exits 1 rather than pretending to record. What
+happens to the recording:
 
 * every click, keystroke, chord and typed value is recorded as an event;
 * the events are **distilled**: consecutive typing folds into one step, a

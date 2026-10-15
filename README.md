@@ -290,7 +290,7 @@ python -m naveed --check
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 213 tests, no display required
+python -m unittest discover -s tests -v      # 220 tests, no display required
 ```
 
 | File | Covers |

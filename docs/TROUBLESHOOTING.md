@@ -149,6 +149,9 @@ as a success.
 * Inspect it directly: `~/.naveed/skills/learned/<name>.json` is plain JSON. Edit
   it by hand if the recording was almost right, or delete it and record again.
 
+If `--teach` printed *"recording needs the input extra (pynput)"* and exited, it
+recorded nothing: install it with `pip install "naveed[input]"` and try again.
+
 ## Where the logs and data are
 
 ```
