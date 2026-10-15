@@ -1,0 +1,111 @@
+# Safety
+
+Naveed drives your real mouse and keyboard on your real desktop. The guard in
+`naveed/control/safety.py` sits between *decided* and *performed*: nothing reaches
+your machine without passing it, and no other module may call the OS directly.
+
+```python
+verdict = safety.inspect(action, raw_text)
+if verdict.blocked:            → tell the user why, skip the action, never confirmable
+elif verdict.needs_confirmation: → ask (spoken + panel), wait, deny on timeout
+else:                          → perform it
+```
+
+The shape of this guard, and the credential rule in particular, is ported from
+[jarmen423/voice-computer-use-agent](https://github.com/jarmen423/voice-computer-use-agent)
+(`voiceuse/safety.py`).
+
+## Three risk levels
+
+| Level | Meaning | What happens |
+|---|---|---|
+| `SAFE` | Reading, opening, navigating, typing ordinary text | Runs immediately. |
+| `DESTRUCTIVE` | Hard to undo: delete, overwrite, close without saving, purchase, send, shutdown, sign out | Confirmation required, `12s` to answer, **denies on timeout**. |
+| `FORBIDDEN` | Unrecoverable or catastrophic | Refused. Never runs, and cannot be confirmed into running. |
+
+## Hard blocks (refused, full stop)
+
+Matched case-insensitively against the action's text, command, URL and label:
+
+```
+rm -rf /            rm -rf /*            mkfs.                dd of=/dev/
+:(){:|:&};:         fork bomb patterns   format C:            diskpart
+reg delete HKLM     shutdown -h now (as a shell command)       > /dev/sda
+```
+
+A refusal is reported to the user with the reason ("that would wipe the disk"),
+spoken aloud, and recorded in the safety history. The agent is told to stop rather
+than retry a different spelling.
+
+## Secrets are never typed
+
+The rule that matters most in practice. Naveed refuses to type:
+
+* a password / passphrase / PIN / 2FA or one-time code / CVV / card number /
+  API key / private key — when it can see the *value*, or when the surrounding
+  request says that is what it is;
+* anything into a field labelled as a credential field when the value is a
+  secret-shaped string.
+
+It does **not** refuse to work in a sign-in window in general. That distinction
+was a real bug: an early version refused all typing whenever the window looked
+like a login screen, which broke the much more common case of "type my email
+address, then let me type the password" and failed its own tests. The corrected
+rule is:
+
+* refuse when → the value looks like a secret (a long random token, a
+  `sk-…`-style key, a card number), **or** the raw request / note / field label
+  contains explicit password intent, **or** a bare 4–8 digit value is being typed
+  into a field that is *labelled* as a credential field;
+* allow otherwise — including typing an email or username into a login form.
+
+The refusal is phrased so a human can act on it:
+
+```
+I will not type secrets — please type this one yourself.
+```
+
+## Confirmation
+
+When a `DESTRUCTIVE` action needs approval, Naveed:
+
+1. pauses the task (`TaskStatus.WAITING`);
+2. says it out loud and shows it on the panel with **Allow / Deny**;
+3. waits up to 12 seconds;
+4. **denies** if nobody answers, and tells the model the action was declined so it
+   can plan something else instead of retrying.
+
+Every verdict lands in `safety.history` (the last 200), which the panel's log and
+`--check` can display. That history is also how the agent learns not to repeat a
+blocked action.
+
+## Shell actions
+
+Shell execution is **off by default** (`SAFETY_ALLOW_SHELL=false`) and off in the
+planner's instructions — the model is told never to emit shell commands. When the
+setting is enabled, commands still pass the hard-block table and the allowlist.
+`--allow-shell` switches it on for one run.
+
+## Budgets and loop protection
+
+| Limit | Default | Behaviour on hitting it |
+|---|---|---|
+| `AGENT_MAX_STEPS` | 18 | Stop, report what was achieved, ask for guidance. |
+| `AGENT_MAX_TASK_SECONDS` | 240 | Stop, same. |
+| `no_change_streak` | 3 | The screen did not change after three consecutive actions → stop and tell the user instead of clicking forever. |
+
+The planner is also instructed never to repeat an action that produced no change.
+
+## Dry run
+
+`--dry-run`, or the panel's checkbox, makes `InputController` a no-op: Naveed
+plans, prints exactly what it *would* click and type, and performs nothing. Useful
+with an unfamiliar model before letting it near your desktop.
+
+## What Naveed deliberately does not do
+
+* No background shell, no service installation, no autostart unless you ask.
+* No network calls except the model endpoint you configured.
+* No screen content is stored anywhere you did not configure (and the default
+  `~/.naveed/screenshots` prunes itself to the newest 100 frames).
+* No typing into password fields, even with confirmation.
