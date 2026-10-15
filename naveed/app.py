@@ -105,6 +105,7 @@ class NaveedApp:
                 f"  action: {result.action.describe()} -> {'ok' if result.ok else 'failed'}: {result.message[:100]}",
             ),
             on_question=lambda question: _echo(verbose, f"  question: {question}"),
+            on_error=lambda message: _echo(verbose, f"  error: {message}"),
         )
         bridge = AgentBridge(self.config, events=events)
         self.bridge = bridge
@@ -122,7 +123,8 @@ class NaveedApp:
                 time.sleep(0.5)
                 task = bridge.last_task
             if task is None:
-                print("no task ran", file=sys.stderr)
+                reason = getattr(bridge, "last_error", "") or "the worker never started one"
+                print(f"no task ran — {reason}", file=sys.stderr)
                 return 1
             print(f"\n{task.status.value.upper()}: {task.result}")
             for step in task.steps:

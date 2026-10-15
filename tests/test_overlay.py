@@ -120,6 +120,74 @@ class LazyImportTests(unittest.TestCase):
         self.assertTrue(all("feature" in entry for entry in report.values()))
 
 
+class OverlayStartupTests(unittest.TestCase):
+    """The order of `run()`: Qt is loaded by `build()`, which must come first.
+
+    `run()` used to read `self._qt["QtWidgets"]` *before* calling `build()` — the
+    method that populates that dictionary. The result was
+    ``KeyError: 'QtWidgets'`` out of the very first thing a user types
+    (`python -m naveed`), on every platform, before the mascot could appear.
+    """
+
+    def _app(self, calls):
+        from types import SimpleNamespace
+
+        from naveed.overlay.bridge import OverlayApp
+
+        app = object.__new__(OverlayApp)          # no Qt, no widgets: just the order
+
+        class FakeQApplication:
+            @staticmethod
+            def instance():
+                calls.append("qt-instance")
+                return SimpleNamespace(exec=lambda: 7, setQuitOnLastWindowClosed=lambda flag: None)
+
+        class FakeQtWidgets:
+            QApplication = FakeQApplication
+
+        def build():
+            calls.append("build")
+            app._qt = {"QtCore": SimpleNamespace(Signal=None), "QtWidgets": FakeQtWidgets}
+
+        app.config = SimpleNamespace(overlay=SimpleNamespace(start_hidden=False, show_panel_on_start=False, size=168),
+                                     voice=SimpleNamespace(tts="none"))
+        app._qt = {}
+        app.build = build
+        app.mascot = SimpleNamespace(show=lambda: calls.append("mascot-show"), position=lambda: (0, 0))
+        app.panel = SimpleNamespace(
+            show=lambda near=None: calls.append("panel-show"),
+            set_mute=lambda flag: calls.append("panel-mute"),
+            apply_state=lambda status: calls.append("panel-state"),
+        )
+        app.bridge = SimpleNamespace(
+            config=app.config,
+            start=lambda: calls.append("bridge-start"),
+            model_ready=True,
+            say=lambda text: calls.append("say"),
+            status=lambda: {},
+        )
+        return app
+
+    def test_run_builds_before_it_reaches_for_qt(self):
+        calls = []
+        app = self._app(calls)
+        self.assertEqual(app.run(), 7, "run() returns the event loop's exit code")
+        self.assertEqual(calls[0], "build", "build() populates _qt and must come first")
+        self.assertIn("qt-instance", calls)
+
+    def test_run_does_not_die_when_qt_was_never_loaded(self):
+        """The failure mode the user hit: no Qt in `_qt`, KeyError, mascot never appears."""
+        calls = []
+        app = self._app(calls)
+        app.build = lambda: calls.append("build")     # a build that cannot load Qt
+        with self.assertRaises(KeyError):
+            # A build() that fails to load Qt is still a hard error — but it must be
+            # *after* the attempt, so the real message (the ImportError from
+            # lazy.load) is what the user sees, not a KeyError from an empty dict.
+            app.run()
+        self.assertEqual(calls, ["build"])
+
+
 class ThemeTests(unittest.TestCase):
     def test_palette_matches_the_reference_colours(self):
         from naveed.overlay.theme import PALETTE

@@ -173,9 +173,15 @@ class OverlayApp:
 
     # --- running ------------------------------------------------------------
     def run(self) -> int:
-        """Show everything and enter the Qt event loop."""
-        QtWidgets = self._qt["QtWidgets"]
+        """Show everything and enter the Qt event loop.
+
+        ``build()`` comes first because it is what loads Qt and fills ``_qt``:
+        reading the module dictionary before it is populated crashed the *main*
+        entry point with ``KeyError: 'QtWidgets'`` on every platform, before the
+        mascot could ever appear.
+        """
         self.build()
+        QtWidgets = self._qt["QtWidgets"]
 
         if not self.config.overlay.start_hidden:
             self.mascot.show()

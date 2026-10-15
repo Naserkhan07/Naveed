@@ -21,7 +21,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from naveed.agent.executor import NaveedAgent, TaskStatus
+from naveed.agent.executor import NaveedAgent, Task, TaskStatus
 from naveed.agent.llm import extract_json
 from naveed.agent.planner import Planner
 from naveed.config import load_config
@@ -203,6 +203,130 @@ class PlannerParseTests(unittest.TestCase):
         self.assertEqual(extract_json('```json\n{"a": 1,}\n```'), {"a": 1})
         self.assertEqual(extract_json('blah {"b": [1,2]} trailing'), {"b": [1, 2]})
         self.assertIsNone(extract_json("no json"))
+
+
+class HeadlessRunTests(unittest.TestCase):
+    """`python -m naveed -p "..."` must wait for the task and say why if it fails.
+
+    Two bugs lived here, both invisible until someone ran the CLI on a real
+    machine:
+
+    * ``submit()`` returned before the worker had touched the queue, so a caller
+      polling ``busy`` saw False immediately and gave up — printing
+      *"no task ran"* while the task was in fact still running;
+    * a worker that crashed said nothing at all in the headless modes, because
+      they subscribed to every event except ``on_error``.
+    """
+
+    def bridge(self, agent):
+        from naveed.agent.bridge import AgentBridge
+
+        config = load_config()
+        config.safety.dry_run = True
+        config.agent.use_ocr = False
+        bridge = AgentBridge(config)
+        bridge.agent = agent          # the real one would need a model and a screen
+        # The agent reports completion through the callback the bridge gave it, so
+        # the stand-in gets the same wiring rather than pretending to be an agent.
+        agent.on_finish = bridge._on_finish
+        return bridge
+
+    def test_busy_is_true_the_moment_a_task_is_accepted(self):
+        release = threading.Event()
+        started = threading.Event()
+
+        class BlockingAgent:
+            busy = False
+            current = None
+            tasks: list = []
+
+            def run(self, prompt, *, extra_context=""):
+                started.set()
+                release.wait(5.0)
+                task = Task(prompt=prompt, status=TaskStatus.DONE, result="done")
+                self.on_finish(task)
+                return task
+
+            def cancel(self):
+                release.set()
+
+            def provide_answer(self, text):
+                pass
+
+        bridge = self.bridge(BlockingAgent())
+        self.assertTrue(bridge.submit("open notepad and type hello"))
+        self.assertTrue(bridge.busy, "a queued task is not an idle bridge — this is the -p race")
+        try:
+            self.assertTrue(started.wait(5.0))
+            self.assertTrue(bridge.busy, "still busy while the agent is working")
+        finally:
+            release.set()
+        deadline = time.time() + 5.0
+        while bridge.busy and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(bridge.busy)
+        self.assertIsNotNone(bridge.last_task)
+        self.assertEqual(bridge.last_task.status, TaskStatus.DONE)
+
+    def test_a_crashing_worker_leaves_a_reason_behind(self):
+        class ExplodingAgent:
+            busy = False
+            current = None
+            tasks: list = []
+
+            def run(self, prompt, *, extra_context=""):
+                raise RuntimeError("the model endpoint refused the connection")
+
+            def cancel(self):
+                pass
+
+            def provide_answer(self, text):
+                pass
+
+        bridge = self.bridge(ExplodingAgent())
+        bridge.submit("open notepad and type hello")
+        deadline = time.time() + 5.0
+        while bridge.busy and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertIn("RuntimeError", bridge.last_error)
+        self.assertIn("refused the connection", bridge.last_error)
+
+    def test_run_task_reports_the_reason_instead_of_a_bare_no_task_ran(self):
+        import contextlib
+        import io as io_module
+        from unittest import mock
+
+        from naveed.agent import bridge as bridge_module
+        from naveed.app import NaveedApp
+
+        class DeadBridge:
+            def __init__(self, config, **kwargs):
+                self.config = config
+                self.model_ready = True
+                self.busy = False
+                self.last_task = None
+                self.last_error = "RuntimeError: the model endpoint refused the connection"
+
+            def start(self):
+                return self
+
+            def submit(self, prompt, **kwargs):
+                return True
+
+            def stop(self):
+                pass
+
+        app = object.__new__(NaveedApp)
+        app.config = load_config()
+        app.bridge = None
+
+        out, err = io_module.StringIO(), io_module.StringIO()
+        with mock.patch.object(bridge_module, "AgentBridge", DeadBridge):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = NaveedApp.run_task(app, "open notepad and type hello")
+        self.assertEqual(code, 1)
+        self.assertIn("no task ran", err.getvalue())
+        self.assertIn("refused the connection", err.getvalue(), "the user must be told why")
 
 
 if __name__ == "__main__":

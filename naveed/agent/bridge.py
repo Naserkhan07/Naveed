@@ -138,6 +138,9 @@ class AgentBridge:
         self._confirmations: Dict[str, threading.Event] = {}
         self._running_task = False
         self.last_task: Optional[Task] = None
+        #: why the last task never finished (the headless modes have nowhere else
+        #: to say it: without this, a crashed worker looked like "no task ran")
+        self.last_error: str = ""
         self.started_at = time.time()
 
     # --- lifecycle ------------------------------------------------------
@@ -164,7 +167,14 @@ class AgentBridge:
     # --- public API ------------------------------------------------------
     @property
     def busy(self) -> bool:
-        return self._running_task or self.agent.busy
+        """True from the moment a task is accepted until its worker is done.
+
+        The queued-but-not-yet-started case matters: `submit()` returns before the
+        worker has picked the item up, so a caller that waits on `busy` used to
+        see False straight away and give up — which is how `-p "..."` reported
+        "no task ran" while the task was in fact still running.
+        """
+        return self._running_task or self.agent.busy or not self._pending.empty()
 
     @property
     def model_ready(self) -> bool:
@@ -184,7 +194,11 @@ class AgentBridge:
         if self.busy:
             self.say("I am still working on the last thing — press Stop if you want me to drop it.")
             return False
+        self.last_error = ""
         self._ensure_worker()
+        # Marked before the queue, not by the worker: the caller may check `busy`
+        # the instant submit() returns.
+        self._running_task = True
         self._pending.put((prompt, extra_context))
         return True
 
@@ -296,7 +310,8 @@ class AgentBridge:
                     logger.info("task done in %.1fs: %s", task.duration, task.result)
             except Exception as error:
                 logger.exception("task worker failed")
-                self._emit("on_error", f"{type(error).__name__}: {error}")
+                self.last_error = f"{type(error).__name__}: {error}"
+                self._emit("on_error", self.last_error)
             finally:
                 self._running_task = False
                 self._publish_state()
